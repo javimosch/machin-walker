@@ -27,6 +27,25 @@ func main() {
 	check("walking, not hopping: flight < 8% of ticks (got " + str(ep.flight) + ")", float(ep.flight) < 96.0)
 	check("upright: no crouch penalty accumulated (got " + str(ep.lowhip) + ")", ep.lowhip < 12.0)
 
+	// human knees: mean knee flexion must be NEGATIVE (the backwards-knee
+	// rig bug walked convincingly — in reverse)
+	b := biped_new()
+	kneeSum := 0.0
+	t := 0
+	while t < 600 {
+		ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
+		cl := biped_contact_l(b)
+		cr := biped_contact_r(b)
+		outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, 0.0, 0, 0))
+		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, 0.0, 0, 0))
+		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		biped_step(b, walk_dt())
+		kneeSum = kneeSum + w_joint_angle(b.w, b.jKneeL) + w_joint_angle(b.w, b.jKneeR)
+		t = t + 1
+	}
+	check("knees flex the human way (mean flexion " + str(kneeSum / 1200.0) + " rad, must be < 0)", kneeSum < 0.0)
+
 	// the training gate seeds (never used in any training round)
 	minD := 1000000.0
 	falls := 0

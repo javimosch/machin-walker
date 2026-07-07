@@ -45,7 +45,7 @@ func walk_inputs(b, ph, jHipT, jKneeT, jAnkT, jHipO, cT, cO, nz, nseed, nt) (x) 
 // apply one leg's net outputs as servo targets (scaled into joint ranges)
 func walk_apply(b, out, jHip, jKnee, jAnk) {
 	w_set_joint_target(b.w, jHip, out[0] * 1.1)
-	w_set_joint_target(b.w, jKnee, (out[1] + 1.0) * 0.8)
+	w_set_joint_target(b.w, jKnee, (out[1] - 1.0) * 0.8)
 	w_set_joint_target(b.w, jAnk, out[2] * 0.5)
 }
 

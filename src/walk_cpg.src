@@ -11,6 +11,7 @@ func cpg_hip(p, ph) (v) {
 	v = p[1] + p[0] * sin(ph)
 }
 
+// knee flexion is NEGATIVE (human knee); p[2] is searched in [-1, -0.1]
 func cpg_knee(p, ph) (v) {
 	v = p[2] * (0.5 + 0.5 * sin(ph + p[3]))
 }
@@ -57,14 +58,14 @@ func cpg_score(p, maxTicks) (f) {
 
 // random search + gaussian refinement over the 6 CPG params
 func cpg_search(samples, refines, maxTicks) (best, bestScore) {
-	best = []float{0.3, 0.0, 0.5, 1.5, 0.2, 0.0}
+	best = []float{0.3, 0.0, -0.5, 1.5, 0.2, 0.0}
 	bestScore = cpg_score(best, maxTicks)
 	i := 0
 	while i < samples {
 		p := []float{}
 		p = append(p, tb_randf_range(0.1, 0.6))     // hipAmp
 		p = append(p, tb_randf_range(-0.25, 0.25))  // hipOff
-		p = append(p, tb_randf_range(0.1, 1.0))     // kneeAmp
+		p = append(p, tb_randf_range(-1.0, -0.1))   // kneeAmp (negative: human flexion)
 		p = append(p, tb_randf_range(0.0, 6.28))    // kneePhase
 		p = append(p, tb_randf_range(0.0, 0.5))     // ankAmp
 		p = append(p, tb_randf_range(0.0, 6.28))    // ankPhase

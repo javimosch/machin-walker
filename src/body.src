@@ -67,8 +67,11 @@ func biped_leg(w, hip, chest, side) (knee, ankle, toe, heel, jHip, jKnee, jAnk, 
 	w2 = w_add_bone(w2, toe, heel)
 	// hip: swing thigh -1.2 (extend back) .. +1.6 (flex forward)
 	jHip, w2 = w_add_joint(w2, chest, hip, knee, 0.9, b_hip_pow(), -1.2, 1.6)
-	// knee: 0 = straight; flexion only (positive bends backward), no hyperextension
-	jKnee, w2 = w_add_joint(w2, hip, knee, ankle, 0.9, b_knee_pow(), 0.0, 2.4)
+	// knee: 0 = straight. In this joint convention +theta swings the ankle
+	// FORWARD (a bird knee); human flexion is NEGATIVE. Getting this sign
+	// wrong once made evolution learn a backwards-knee gait that read as
+	// walking backwards. Flexion only, no hyperextension:
+	jKnee, w2 = w_add_joint(w2, hip, knee, ankle, 0.9, b_knee_pow(), -2.4, 0.0)
 	// ankle: dorsi/plantar-flex around neutral
 	jAnk, w2 = w_add_joint(w2, knee, ankle, toe, 0.9, b_ank_pow(), -0.9, 0.9)
 }
