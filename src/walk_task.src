@@ -7,7 +7,11 @@
 // rest under their torque limits. Composes with pbd.src, body.src, tinybrain.
 
 func walk_dt() (v) { v = 0.0166666 }
-func walk_hz() (v) { v = 1.1 }   // gait cycle frequency the phase clock runs at
+
+// gait cycle frequency; a package global so experiments can scan it
+var g_hz = 1.1
+
+func walk_hz() (v) { v = g_hz }
 
 // stateless deterministic noise hash in [-1,1] — PURE (no PRNG globals), so
 // the fitness function is safe to run concurrently in evolve workers
@@ -57,9 +61,25 @@ type WalkEp struct {
 	lowhip float
 }
 
+// the TRAINING HARNESS: a declared external support (like the harness a
+// humanoid robot or a toddler learns in) that nudges the torso toward
+// upright over the hip. k=0 means NO assist — the only mode the gate, the
+// tests, and the shipped artifact ever run in. Scans proved no open-loop
+// human-knee gait exists at any cadence: feedback must be learned, and the
+// harness anneals to zero while it is.
+func walk_harness(b, k) {
+	if k <= 0.0 {
+		return
+	}
+	dx := b.w.px[b.hip] - b.w.px[b.chest]
+	b.w.px[b.chest] = b.w.px[b.chest] + k * 0.03 * dx
+	b.w.px[b.head] = b.w.px[b.head] + k * 0.045 * dx
+}
+
 // run one episode: net drives both legs (phase-shifted) for maxTicks or fall.
 // noiseSeed > 0 turns on +-1% sensor noise (seeded, deterministic).
-func walk_episode(n, maxTicks, noiseSeed) (ep) {
+// assist: harness strength, 0 for every evaluation that counts.
+func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 	ep = WalkEp{dist: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
 	nz := 0.0
 	if noiseSeed > 0 {
@@ -76,6 +96,7 @@ func walk_episode(n, maxTicks, noiseSeed) (ep) {
 		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
 		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
 		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		walk_harness(b, assist)
 		biped_step(b, walk_dt())
 		if biped_contact_l(b) + biped_contact_r(b) == 0 {
 			ep.flight = ep.flight + 1
@@ -92,6 +113,11 @@ func walk_episode(n, maxTicks, noiseSeed) (ep) {
 	}
 	ep.ticks = t
 	ep.dist = biped_hip_x(b) - x0
+}
+
+// assist-free episode — the only kind gates/tests/consumers use
+func walk_episode(n, maxTicks, noiseSeed) (ep) {
+	ep = walk_episode_h(n, maxTicks, noiseSeed, 0.0)
 }
 
 // fitness for one episode: forward distance if the walker STAYS UP (+1

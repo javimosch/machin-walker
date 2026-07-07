@@ -1,0 +1,139 @@
+// ml/walk_train5.src — the harness curriculum, end to end.
+// Grid scans proved NO open-loop human-knee gait exists in this sim at any
+// cadence (best 0.84 fitness over 1440 cells): human-style legs make walking
+// a feedback problem from the first step — the backwards-knee bug walked
+// easily precisely because bird legs are passively stable. So, like a
+// toddler or a lab humanoid, the net learns IN A HARNESS (walk_harness) that
+// anneals to zero; every gate evaluation is assist-free.
+//   1. CPG search + SGD clone (leg-swing prior)
+//   2. harness rounds: assist 0.8 -> 0, worst-of-3 fresh seeds each round
+//   3. assist-free gated rounds (fresh seeds; exit only when the RELOADED
+//      artifact walks >=10m, zero falls, <8% flight on 5 never-used seeds)
+
+func h_fitness(n, maxTicks, base, assist) (f) {
+	f = 1000000.0
+	k := 0
+	while k < 3 {
+		s := walk_ep_score(walk_episode_h(n, maxTicks, base + k * 17, assist), maxTicks)
+		if s < f {
+			f = s
+		}
+		k = k + 1
+	}
+}
+
+func gate_eval5(n, maxTicks) (minDist, falls, maxFlight) {
+	minDist = 1000000.0
+	falls = 0
+	maxFlight = 0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := walk_episode(n, maxTicks, sd)
+		if ep.dist < minDist {
+			minDist = ep.dist
+		}
+		if ep.fell {
+			falls = falls + 1
+		}
+		if ep.flight > maxFlight {
+			maxFlight = ep.flight
+		}
+	}
+}
+
+func main() {
+	maxTicks := 1200
+
+	// ── 1. movement prior ──
+	tb_seed(42)
+	p, ps := cpg_search(1200, 800, maxTicks)
+	println("{\"phase\":\"cpg\",\"score\":" + tb_fmt(ps) + ",\"params\":" + tb_vec_json(p) + "}")
+	flush()
+	n := net_new([]int{11, 14, 3}, []string{"tanh", "tanh"}, 42)
+	ds := Dataset{}
+	i := 0
+	while i < 4000 {
+		ph := tb_randf_range(0.0, 2.0 * pi())
+		x := []float{}
+		x = append(x, sin(ph))
+		x = append(x, sin(ph + pi() / 2.0))
+		x = append(x, tb_randf_range(-0.4, 0.4))
+		x = append(x, tb_randf_range(-0.6, 0.3))
+		x = append(x, tb_randf_range(-0.3, 0.8))
+		x = append(x, tb_randf_range(-1.0, 1.2))
+		x = append(x, tb_randf_range(-1.8, 0.0))
+		x = append(x, tb_randf_range(-0.7, 0.7))
+		x = append(x, tb_randf_range(-1.0, 1.2))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		y := []float{}
+		y = append(y, cpg_hip(p, ph) / 1.1)
+		y = append(y, cpg_knee(p, ph) / 0.8 + 1.0)
+		y = append(y, cpg_ank(p, ph) / 0.5)
+		ds.x = append(ds.x, x)
+		ds.y = append(ds.y, y)
+		i = i + 1
+	}
+	loss := net_train_sgd(n, ds, 200, 0.02)
+	println("{\"phase\":\"clone\",\"mse\":" + tb_fmt(loss) + "}")
+	flush()
+
+	// ── 2. harness rounds, assist annealing to zero ──
+	assists := []float{0.8, 0.55, 0.38, 0.26, 0.18, 0.12, 0.08, 0.05, 0.03, 0.0}
+	r := 0
+	while r < len(assists) {
+		a := assists[r]
+		base := 3000 + r * 500
+		fit := func(nn) {
+			return h_fitness(nn, maxTicks, base, a)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 96
+		cfg.generations = 150
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.15
+		cfg.warm_start = true
+		cfg.workers = 8
+		cfg.target_fitness = 11.0
+		cfg.print_every = 0
+		res, champ := evolve_run(n, fit, cfg)
+		net_save(champ, "ml/models/walker_h.json")
+		n = net_load("ml/models/walker_h.json")
+		bare := h_fitness(n, maxTicks, base, 0.0)
+		println("{\"harness_round\":" + str(r) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"assist_free_fitness\":" + tb_fmt(bare) + "}")
+		flush()
+		r = r + 1
+	}
+
+	// ── 3. assist-free gated rounds ──
+	round := 0
+	while round < 12 {
+		base := 50000 + round * 1000
+		fit := func(nn) {
+			return h_fitness(nn, maxTicks, base, 0.0)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 96
+		cfg.generations = 150
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.10
+		cfg.warm_start = true
+		cfg.workers = 8
+		cfg.target_fitness = 12.0
+		cfg.print_every = 0
+		res, champ := evolve_run(n, fit, cfg)
+		net_save(champ, "ml/models/walker_robust.json")
+		m := net_load("ml/models/walker_robust.json")
+		minDist, falls, maxFlight := gate_eval5(m, maxTicks)
+		println("{\"gate_round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight\":" + str(maxFlight) + "}}")
+		flush()
+		if falls == 0 && minDist >= 10.0 && maxFlight < 96 {
+			println("{\"status\":\"GATE PASSED\",\"artifact\":\"ml/models/walker_robust.json\",\"gate_rounds\":" + str(round + 1) + "}")
+			return
+		}
+		n = m
+		round = round + 1
+	}
+	println("{\"status\":\"gate not passed — see last gate numbers\"}")
+}
