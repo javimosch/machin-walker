@@ -31,16 +31,10 @@ func main() {
 	// rig bug walked convincingly — in reverse)
 	b := biped_new()
 	kneeSum := 0.0
+	kph := 0.0
 	t := 0
 	while t < 600 {
-		ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
-		cl := biped_contact_l(b)
-		cr := biped_contact_r(b)
-		outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, 0.0, 0, 0))
-		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, 0.0, 0, 0))
-		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
-		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
-		walk_arm_swing(b)
+		kph = walk_ctrl_step(n, b, kph, 0.0, 0, t)
 		biped_step(b, walk_dt())
 		kneeSum = kneeSum + w_joint_angle(b.w, b.jKneeL) + w_joint_angle(b.w, b.jKneeR)
 		t = t + 1

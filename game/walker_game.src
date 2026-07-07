@@ -105,17 +105,11 @@ func main() {
 	InitWindow(1100, 700, "machin-walker - a tinybrain net learned to walk")
 	SetTargetFPS(60)
 	hud := Color{235, 235, 235, 255}
+	gph := 0.0
 	t := 0
 	for WindowShouldClose() == false {
 		if biped_fallen(b) == false {
-			ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
-			cl := biped_contact_l(b)
-			cr := biped_contact_r(b)
-			outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, 0.0, 0, 0))
-			outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, 0.0, 0, 0))
-			walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
-			walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
-			walk_arm_swing(b)
+			gph = walk_ctrl_step(n, b, gph, 0.0, 0, t)
 			biped_step(b, walk_dt())
 			t = t + 1
 		}

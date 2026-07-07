@@ -40,12 +40,12 @@ func gate_eval5(n, maxTicks) (minDist, falls, maxFlight) {
 }
 
 func main() {
-	maxTicks := 1200
+	maxTicks := 1500
 
 	// resume support: if a harness champion exists, warm-start from it and
 	// skip the CPG+clone bootstrap
 	prev := net_load("ml/models/walker_h.json")
-	if prev.tinybrain == 1 && prev.topology[0] == 13 {
+	if prev.tinybrain == 1 && prev.topology[0] == 13 && prev.topology[2] == 4 {
 		println("{\"resume_from\":\"ml/models/walker_h.json\"}")
 		flush()
 		walk_curriculum(prev, maxTicks)
@@ -57,7 +57,7 @@ func main() {
 	p, ps := cpg_search(1200, 800, maxTicks)
 	println("{\"phase\":\"cpg\",\"score\":" + tb_fmt(ps) + ",\"params\":" + tb_vec_json(p) + "}")
 	flush()
-	n := net_new([]int{13, 16, 3}, []string{"tanh", "tanh"}, 42)
+	n := net_new([]int{13, 16, 4}, []string{"tanh", "tanh"}, 42)
 	ds := Dataset{}
 	i := 0
 	while i < 4000 {
@@ -80,6 +80,7 @@ func main() {
 		y = append(y, cpg_hip(p, ph) / 1.1)
 		y = append(y, cpg_knee(p, ph) / 0.8 + 1.0)
 		y = append(y, cpg_ank(p, ph) / 0.5)
+		y = append(y, 0.0)
 		ds.x = append(ds.x, x)
 		ds.y = append(ds.y, y)
 		i = i + 1

@@ -9,7 +9,7 @@
 func walk_dt() (v) { v = 0.0166666 }
 
 // gait cycle frequency; a package global so experiments can scan it
-var g_hz = 1.1
+var g_hz = 0.95
 
 func walk_hz() (v) { v = g_hz }
 
@@ -89,16 +89,10 @@ func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 	}
 	b := biped_new()
 	x0 := biped_hip_x(b)
+	ph := 0.0
 	t := 0
 	while t < maxTicks {
-		ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
-		cl := biped_contact_l(b)
-		cr := biped_contact_r(b)
-		outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, nz, noiseSeed, t))
-		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
-		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
-		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
-		walk_arm_swing(b)
+		ph = walk_ctrl_step(n, b, ph, nz, noiseSeed, t)
 		walk_harness(b, assist)
 		biped_step(b, walk_dt())
 		if biped_contact_l(b) + biped_contact_r(b) == 0 {
@@ -116,6 +110,29 @@ func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 	}
 	ep.ticks = t
 	ep.dist = biped_hip_x(b) - x0
+}
+
+// one controller step: sense -> net (both legs, mirrored phase) -> servo
+// targets -> arm swing; returns the ADVANCED phase. The net's 4th output
+// modulates the clock rate (0.6x..1.6x): learned STEP TIMING — stepping
+// sooner to catch a fall (capture-point stepping) is the core sagittal
+// balance mechanism a fixed clock cannot express.
+func walk_ctrl_step(n, b, ph, nz, nseed, nt) (ph2) {
+	cl := biped_contact_l(b)
+	cr := biped_contact_r(b)
+	outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, nz, nseed, nt))
+	outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, nseed + 7, nt))
+	walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+	walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+	walk_arm_swing(b)
+	rate := 1.0 + 0.175 * (outL[3] + outR[3])
+	if rate < 0.6 {
+		rate = 0.6
+	}
+	if rate > 1.6 {
+		rate = 1.6
+	}
+	ph2 = ph + 2.0 * pi() * walk_hz() * walk_dt() * rate
 }
 
 // natural arm swing: each arm counter-swings its SAME-side leg through the

@@ -7,6 +7,7 @@
 var g_net = Net{}
 var g_b = Biped{}
 var g_t = 0
+var g_ph = 0.0
 var g_x0 = 0.0
 var g_booted = 0
 
@@ -25,6 +26,7 @@ export func boot(p) (ok) {
 	g_b = biped_new()
 	g_x0 = biped_hip_x(g_b)
 	g_t = 0
+	g_ph = 0.0
 	g_booted = 1
 	ok = 1
 }
@@ -33,6 +35,7 @@ export func restart() {
 	g_b = biped_new()
 	g_x0 = biped_hip_x(g_b)
 	g_t = 0
+	g_ph = 0.0
 }
 
 // one 60 Hz step; restarts automatically a moment after a fall
@@ -47,14 +50,7 @@ export func tick() {
 		}
 		return
 	}
-	ph := 2.0 * pi() * walk_hz() * float(g_t) * walk_dt()
-	cl := biped_contact_l(g_b)
-	cr := biped_contact_r(g_b)
-	outL := net_forward(g_net, walk_inputs(g_b, ph, g_b.jHipL, g_b.jKneeL, g_b.jAnkL, g_b.jHipR, cl, cr, 0.0, 0, 0))
-	outR := net_forward(g_net, walk_inputs(g_b, ph + pi(), g_b.jHipR, g_b.jKneeR, g_b.jAnkR, g_b.jHipL, cr, cl, 0.0, 0, 0))
-	walk_apply(g_b, outL, g_b.jHipL, g_b.jKneeL, g_b.jAnkL)
-	walk_apply(g_b, outR, g_b.jHipR, g_b.jKneeR, g_b.jAnkR)
-	walk_arm_swing(g_b)
+	g_ph = walk_ctrl_step(g_net, g_b, g_ph, 0.0, 0, g_t)
 	biped_step(g_b, walk_dt())
 	g_t = g_t + 1
 }
