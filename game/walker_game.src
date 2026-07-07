@@ -123,7 +123,18 @@ func main() {
 		ClearBackground(Color{20, 24, 30, 255})
 		cam := Camera3D{Vector3{hx - 1.6, 1.7, 3.2}, Vector3{hx + 0.4, 0.9, 0.0}, Vector3{0.0, 1.0, 0.0}, 55.0, 0}
 		BeginMode3D(cam)
-		DrawGrid(60, 0.5)
+		// floor grid that follows the walker (DrawGrid is origin-centered)
+		gx := floor(hx)
+		gi := -14
+		while gi <= 14 {
+			DrawLine3D(Vector3{gx + float(gi) * 0.5, 0.0, -4.0}, Vector3{gx + float(gi) * 0.5, 0.0, 4.0}, Color{55, 62, 74, 255})
+			gi = gi + 1
+		}
+		gz := -8
+		while gz <= 8 {
+			DrawLine3D(Vector3{gx - 7.0, 0.0, float(gz) * 0.5}, Vector3{gx + 7.0, 0.0, float(gz) * 0.5}, Color{55, 62, 74, 255})
+			gz = gz + 1
+		}
 		// meter marks along the path
 		m := 0
 		while m <= 14 {

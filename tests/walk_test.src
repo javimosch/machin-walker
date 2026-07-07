@@ -1,0 +1,52 @@
+// tests/walk_test.src — the challenge gate, enforced on the COMMITTED artifact
+// (no training here; training is ml/walk_train*.src on rbm21).
+
+var g_pass = 0
+var g_fail = 0
+
+func check(name, cond) {
+	if cond {
+		g_pass = g_pass + 1
+		println("  PASS  " + name)
+	} else {
+		g_fail = g_fail + 1
+		println("  FAIL  " + name)
+	}
+}
+
+func main() {
+	println("=== the walk gate: ml/models/walker.json ===")
+	n := net_load("ml/models/walker.json")
+	check("artifact loads (tinybrain/v1)", n.tinybrain == 1)
+	check("controller topology 11-14-3", n.topology[0] == 11 && n.topology[2] == 3)
+
+	// noise-free walk
+	ep := walk_episode(n, 1200, 0)
+	check("walks >= 10m in 20s noise-free (got " + str(ep.dist) + "m)", ep.dist >= 10.0)
+	check("never falls noise-free", ep.fell == false)
+	check("walking, not hopping: flight < 8% of ticks (got " + str(ep.flight) + ")", float(ep.flight) < 96.0)
+	check("upright: no crouch penalty accumulated (got " + str(ep.lowhip) + ")", ep.lowhip < 12.0)
+
+	// the training gate seeds (never used in any training round)
+	minD := 1000000.0
+	falls := 0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		e := walk_episode(n, 1200, sd)
+		if e.dist < minD {
+			minD = e.dist
+		}
+		if e.fell {
+			falls = falls + 1
+		}
+	}
+	check("5 held-out noise seeds: all >= 10m (min " + str(minD) + "m)", minD >= 10.0)
+	check("5 held-out noise seeds: zero falls", falls == 0)
+
+	println("=== summary ===")
+	println("PASS " + str(g_pass) + "   FAIL " + str(g_fail))
+	if g_fail > 0 {
+		println("THERE WERE FAILURES")
+		exit(1)
+	}
+	println("ALL TESTS PASSED")
+}
