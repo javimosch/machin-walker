@@ -96,6 +96,7 @@ func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
 		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
 		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		walk_arm_swing(b)
 		walk_harness(b, assist)
 		biped_step(b, walk_dt())
 		if biped_contact_l(b) + biped_contact_r(b) == 0 {
@@ -113,6 +114,23 @@ func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 	}
 	ep.ticks = t
 	ep.dist = biped_hip_x(b) - x0
+}
+
+// natural arm swing: each arm counter-swings its SAME-side leg through the
+// (weak, torque-limited) shoulder servos, elbows slightly bent. Procedural
+// but physical — the arms are real masses, their reaction feeds balance, and
+// the net trains WITH them.
+func walk_arm_swing(b) {
+	sl := -0.55 * w_joint_angle(b.w, b.jHipL)
+	if sl > 0.9 { sl = 0.9 }
+	if sl < -0.9 { sl = -0.9 }
+	sr := -0.55 * w_joint_angle(b.w, b.jHipR)
+	if sr > 0.9 { sr = 0.9 }
+	if sr < -0.9 { sr = -0.9 }
+	w_set_joint_target(b.w, b.jShL, sl)
+	w_set_joint_target(b.w, b.jShR, sr)
+	w_set_joint_target(b.w, b.jElbL, 0.35)
+	w_set_joint_target(b.w, b.jElbR, 0.35)
 }
 
 // assist-free episode — the only kind gates/tests/consumers use

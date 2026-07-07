@@ -82,9 +82,10 @@ func biped_arm(w, chest, hip, side) (elbow, hand, jSh, jElb, w2) {
 	hand, w2 = w_add_pt(w2, side * 0.002, 0.88, 1.2)
 	w2 = w_add_bone(w2, chest, elbow)
 	w2 = w_add_bone(w2, elbow, hand)
-	// passive shoulder/elbow: weak springs to hang, free to swing
-	jSh, w2 = w_add_joint(w2, hip, chest, elbow, 0.15, 0.004, -1.4, 1.4)
-	jElb, w2 = w_add_joint(w2, chest, elbow, hand, 0.15, 0.004, -0.2, 2.0)
+	// shoulder/elbow: weak torque-limited servos — walk_arm_swing drives a
+	// natural counter-swing; still soft enough to flail on impacts
+	jSh, w2 = w_add_joint(w2, hip, chest, elbow, 0.5, 0.004, -1.4, 1.4)
+	jElb, w2 = w_add_joint(w2, chest, elbow, hand, 0.5, 0.004, -0.2, 2.0)
 }
 
 func biped_new() (b) {

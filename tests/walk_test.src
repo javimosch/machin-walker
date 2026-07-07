@@ -40,6 +40,7 @@ func main() {
 		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, 0.0, 0, 0))
 		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
 		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		walk_arm_swing(b)
 		biped_step(b, walk_dt())
 		kneeSum = kneeSum + w_joint_angle(b.w, b.jKneeL) + w_joint_angle(b.w, b.jKneeR)
 		t = t + 1

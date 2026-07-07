@@ -1,0 +1,89 @@
+// machin-walker — web/walker_wasm.src
+// The browser build: the SAME pbd + body + walk_task modules compiled to
+// WebAssembly. The canvas host polls particle positions each tick and draws
+// the skeleton with its own tiny 3D projection — no physics, no inference,
+// no networking in JS. Build: web/build.sh -> docs/
+
+var g_net = Net{}
+var g_b = Biped{}
+var g_t = 0
+var g_x0 = 0.0
+var g_booted = 0
+
+export func buf(n) (p) {
+	p = alloc(n + 1)
+}
+
+export func boot(p) (ok) {
+	src := ptr_str(p)
+	free(p)
+	g_net = parse(src, Net{})
+	ok = 0
+	if g_net.tinybrain != 1 {
+		return
+	}
+	g_b = biped_new()
+	g_x0 = biped_hip_x(g_b)
+	g_t = 0
+	g_booted = 1
+	ok = 1
+}
+
+export func restart() {
+	g_b = biped_new()
+	g_x0 = biped_hip_x(g_b)
+	g_t = 0
+}
+
+// one 60 Hz step; restarts automatically a moment after a fall
+export func tick() {
+	if g_booted == 0 {
+		return
+	}
+	if biped_fallen(g_b) {
+		g_t = g_t + 1
+		if g_t % 90 == 0 {
+			restart()
+		}
+		return
+	}
+	ph := 2.0 * pi() * walk_hz() * float(g_t) * walk_dt()
+	cl := biped_contact_l(g_b)
+	cr := biped_contact_r(g_b)
+	outL := net_forward(g_net, walk_inputs(g_b, ph, g_b.jHipL, g_b.jKneeL, g_b.jAnkL, g_b.jHipR, cl, cr, 0.0, 0, 0))
+	outR := net_forward(g_net, walk_inputs(g_b, ph + pi(), g_b.jHipR, g_b.jKneeR, g_b.jAnkR, g_b.jHipL, cr, cl, 0.0, 0, 0))
+	walk_apply(g_b, outL, g_b.jHipL, g_b.jKneeL, g_b.jAnkL)
+	walk_apply(g_b, outR, g_b.jHipR, g_b.jKneeR, g_b.jAnkR)
+	walk_arm_swing(g_b)
+	biped_step(g_b, walk_dt())
+	g_t = g_t + 1
+}
+
+// particle positions (creation order: hip chest head kneeL ankleL toeL heelL
+// kneeR ankleR toeR heelR elbowL handL elbowR handR)
+export func pt_x(i) (v) {
+	v = g_b.w.px[i]
+}
+
+export func pt_y(i) (v) {
+	v = g_b.w.py[i]
+}
+
+export func walk_dist() (v) {
+	v = biped_hip_x(g_b) - g_x0
+}
+
+export func walk_speed() (v) {
+	v = biped_vx(g_b, walk_dt())
+}
+
+export func walk_fell() (v) {
+	v = 0
+	if biped_fallen(g_b) {
+		v = 1
+	}
+}
+
+export func walk_t() (v) {
+	v = float(g_t) * walk_dt()
+}
