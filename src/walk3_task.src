@@ -1,0 +1,187 @@
+// machin-walker — src/walk3_task.src
+// The 3D walking task. Same doctrine as 2D, plus the lateral channel:
+// inputs grow roll/roll-rate/lateral-velocity and the frontal joint angles,
+// outputs grow frontal hip + ankle targets. Mirror symmetry in 3D flips the
+// LATERAL sign for the right leg: same policy, mirrored world.
+
+func walk3_hz() (v) { v = 1.1 }
+func walk3_dt() (v) { v = 0.0166666 }
+func walk3_tol_flight(maxTicks) (v) { v = 0.08 * float(maxTicks) }
+
+func biped3_vx(b, dt) (v) {
+	v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0)
+}
+
+func biped3_vy(b, dt) (v) {
+	v = (b.w.py[b.hip] - b.w.oy[b.hip]) / (dt / 6.0)
+}
+
+func biped3_vz(b, dt) (v) {
+	v = (b.w.pz[b.hip] - b.w.oz[b.hip]) / (dt / 6.0)
+}
+
+func biped3_pitch_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	cv := (b.w.px[b.chest] - b.w.ox[b.chest]) / sdt
+	hv := (b.w.px[b.hip] - b.w.ox[b.hip]) / sdt
+	sl := b.w.py[b.chest] - b.w.py[b.hip]
+	if sl < 0.1 {
+		sl = 0.1
+	}
+	r = (cv - hv) / sl
+}
+
+func biped3_roll_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	cv := (b.w.pz[b.chest] - b.w.oz[b.chest]) / sdt
+	hv := (b.w.pz[b.hip] - b.w.oz[b.hip]) / sdt
+	sl := b.w.py[b.chest] - b.w.py[b.hip]
+	if sl < 0.1 {
+		sl = 0.1
+	}
+	r = (cv - hv) / sl
+}
+
+func biped3_contact(b, toe, hi, ho) (c) {
+	c = 0
+	if b.w.contact[toe] == 1 || b.w.contact[hi] == 1 || b.w.contact[ho] == 1 {
+		c = 1
+	}
+}
+
+// stateless noise hash (pure — parallel-safe)
+func walk3_noise(seed, t, i) (v) {
+	x := sin(float(seed) * 12.9898 + float(t) * 78.233 + float(i) * 37.719) * 43758.5453
+	v = (x - floor(x)) * 2.0 - 1.0
+}
+
+// per-leg inputs (18). `mir` = +1 for the left leg, -1 for the right: every
+// LATERAL quantity is multiplied by mir so one policy serves both legs in a
+// mirrored world.
+func walk3_inputs(b, ph, mir, jHip, jKnee, jAnk, jHipF, jAnkF, jHipO, cT, cO, nz, nseed, nt) (x) {
+	x = []float{}
+	x = append(x, sin(ph))
+	x = append(x, sin(ph + pi() / 2.0))
+	x = append(x, biped3_pitch(b))
+	x = append(x, biped3_pitch_rate(b, walk3_dt()) / 3.0)
+	x = append(x, mir * biped3_roll(b))
+	x = append(x, mir * biped3_roll_rate(b, walk3_dt()) / 3.0)
+	x = append(x, (b.w.py[b.hip] - 0.96) * 4.0)
+	x = append(x, biped3_vx(b, walk3_dt()) / 2.0)
+	x = append(x, biped3_vy(b, walk3_dt()) / 1.5)
+	x = append(x, mir * biped3_vz(b, walk3_dt()) / 1.5)
+	x = append(x, w3_joint_angle(b.w, jHip))
+	x = append(x, w3_joint_angle(b.w, jKnee))
+	x = append(x, w3_joint_angle(b.w, jAnk))
+	x = append(x, mir * w3_joint_angle(b.w, jHipF))
+	x = append(x, mir * w3_joint_angle(b.w, jAnkF))
+	x = append(x, w3_joint_angle(b.w, jHipO))
+	x = append(x, float(cT))
+	x = append(x, float(cO))
+	if nz > 0.0 {
+		i := 0
+		while i < len(x) {
+			x[i] = x[i] + nz * walk3_noise(nseed, nt, i)
+			i = i + 1
+		}
+	}
+}
+
+// apply one leg's outputs (5): sagittal hip/knee/ankle + frontal hip/ankle,
+// frontal targets mirrored back into world sign
+func walk3_apply(b, out, mir, jHip, jKnee, jAnk, jHipF, jAnkF) {
+	w3_set_joint_target(b.w, jHip, out[0] * 1.1)
+	w3_set_joint_target(b.w, jKnee, (out[1] - 1.0) * 0.8)
+	w3_set_joint_target(b.w, jAnk, out[2] * 0.5)
+	w3_set_joint_target(b.w, jHipF, mir * out[3] * 0.4)
+	w3_set_joint_target(b.w, jAnkF, mir * out[4] * 0.3)
+}
+
+func walk3_arm_swing(b) {
+	sl := -0.55 * w3_joint_angle(b.w, b.jHipL)
+	if sl > 0.9 { sl = 0.9 }
+	if sl < -0.9 { sl = -0.9 }
+	sr := -0.55 * w3_joint_angle(b.w, b.jHipR)
+	if sr > 0.9 { sr = 0.9 }
+	if sr < -0.9 { sr = -0.9 }
+	w3_set_joint_target(b.w, b.jShL, sl)
+	w3_set_joint_target(b.w, b.jShR, sr)
+	w3_set_joint_target(b.w, b.jElbL, 0.35)
+	w3_set_joint_target(b.w, b.jElbR, 0.35)
+}
+
+// harness for the 3D curriculum: supports pitch AND roll
+func walk3_harness(b, k) {
+	if k <= 0.0 {
+		return
+	}
+	dx := b.w.px[b.hip] - b.w.px[b.chest]
+	dz := b.w.pz[b.hip] - b.w.pz[b.chest]
+	b.w.px[b.chest] = b.w.px[b.chest] + k * 0.03 * dx
+	b.w.px[b.head] = b.w.px[b.head] + k * 0.045 * dx
+	b.w.pz[b.chest] = b.w.pz[b.chest] + k * 0.03 * dz
+	b.w.pz[b.head] = b.w.pz[b.head] + k * 0.045 * dz
+}
+
+type Walk3Ep struct {
+	dist float
+	drift float
+	ticks int
+	fell bool
+	flight int
+	lowhip float
+}
+
+func walk3_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
+	ep = Walk3Ep{dist: 0.0, drift: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	nz := 0.0
+	if noiseSeed > 0 {
+		nz = 0.01
+	}
+	b := biped3_new()
+	x0 := b.w.px[b.hip]
+	z0 := b.w.pz[b.hip]
+	t := 0
+	while t < maxTicks {
+		ph := 2.0 * pi() * walk3_hz() * float(t) * walk3_dt()
+		cl := biped3_contact(b, b.toeL, b.heelIL, b.heelOL)
+		cr := biped3_contact(b, b.toeR, b.heelIR, b.heelOR)
+		outL := net_forward(n, walk3_inputs(b, ph, 1.0, b.jHipL, b.jKneeL, b.jAnkL, b.jHipFL, b.jAnkFL, b.jHipR, cl, cr, nz, noiseSeed, t))
+		outR := net_forward(n, walk3_inputs(b, ph + pi(), -1.0, b.jHipR, b.jKneeR, b.jAnkR, b.jHipFR, b.jAnkFR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
+		walk3_apply(b, outL, 1.0, b.jHipL, b.jKneeL, b.jAnkL, b.jHipFL, b.jAnkFL)
+		walk3_apply(b, outR, -1.0, b.jHipR, b.jKneeR, b.jAnkR, b.jHipFR, b.jAnkFR)
+		walk3_arm_swing(b)
+		walk3_harness(b, assist)
+		biped3_step(b, walk3_dt())
+		if biped3_contact(b, b.toeL, b.heelIL, b.heelOL) + biped3_contact(b, b.toeR, b.heelIR, b.heelOR) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := b.w.py[b.hip]
+		if h < 0.82 {
+			ep.lowhip = ep.lowhip + (0.82 - h)
+		}
+		t = t + 1
+		if biped3_fallen(b) {
+			ep.fell = true
+			break
+		}
+	}
+	ep.ticks = t
+	ep.dist = b.w.px[b.hip] - x0
+	ep.drift = absf3(b.w.pz[b.hip] - z0)
+}
+
+// score: like 2D, plus a lateral-drift penalty (walk STRAIGHT)
+func walk3_ep_score(ep, maxTicks) (f) {
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * float(ep.flight) / float(maxTicks)
+	f = f - 2.0 * ep.lowhip / float(maxTicks)
+	f = f - 0.5 * ep.drift
+	if float(ep.flight) > walk3_tol_flight(maxTicks) {
+		f = 0.25 * ep.dist
+	}
+}
