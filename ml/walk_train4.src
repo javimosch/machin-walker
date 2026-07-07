@@ -1,0 +1,71 @@
+// ml/walk_train4.src — the honest convergence loop.
+// Lesson accumulated over three failed champions: any FIXED evaluation setup
+// gets memorized (2 noise seeds -> co-adapted; 5 seeds -> lucky mutant + gen-1
+// early stop), and the in-memory champion is not the artifact (weight
+// truncation diverges chaotic episodes). So the gate IS the deliverable:
+//   the SAVED-AND-RELOADED artifact must walk >= 10m with ZERO falls on
+//   5 noise seeds NEVER used in any training round.
+// Rounds re-draw their 5 training seeds every time (nothing to memorize) and
+// each round warm-starts from the RELOADED previous champion (truncation
+// robustness enters selection).
+
+func round_fitness(n, maxTicks, base) (f) {
+	f = 1000000.0
+	k := 0
+	while k < 5 {
+		s := walk_ep_score(walk_episode(n, maxTicks, base + k * 17), maxTicks)
+		if s < f {
+			f = s
+		}
+		k = k + 1
+	}
+}
+
+func gate_eval(n, maxTicks) (minDist, falls) {
+	minDist = 1000000.0
+	falls = 0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := walk_episode(n, maxTicks, sd)
+		if ep.dist < minDist {
+			minDist = ep.dist
+		}
+		if ep.fell {
+			falls = falls + 1
+		}
+	}
+}
+
+func main() {
+	maxTicks := 1200
+	n := net_load("ml/models/walker.json")
+	round := 0
+	while round < 18 {
+		base := 5000 + round * 1000
+		fit := func(nn) {
+			return round_fitness(nn, maxTicks, base)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 128
+		cfg.generations = 120
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.10
+		cfg.warm_start = true
+		cfg.workers = 12
+		cfg.target_fitness = 12.0
+		cfg.print_every = 0
+		res, champ := evolve_run(n, fit, cfg)
+		net_save(champ, "ml/models/walker_robust.json")
+		m := net_load("ml/models/walker_robust.json")
+		minDist, falls := gate_eval(m, maxTicks)
+		println("{\"round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + "}}")
+		flush()
+		if falls == 0 && minDist >= 10.0 {
+			println("{\"status\":\"GATE PASSED\",\"artifact\":\"ml/models/walker_robust.json\",\"rounds\":" + str(round + 1) + "}")
+			return
+		}
+		n = m
+		round = round + 1
+	}
+	println("{\"status\":\"gate not passed in 18 rounds — see last gate numbers\"}")
+}
