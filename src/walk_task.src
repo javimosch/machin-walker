@@ -1,0 +1,120 @@
+// machin-walker — src/walk_task.src
+// The learning task: make the biped walk +x. One tinybrain net is the whole
+// controller, evaluated once per leg per tick with a half-cycle phase shift
+// (mirror symmetry: same policy, legs half a cycle apart — the prior that
+// makes gaits symmetric and halves the search space). Outputs are joint
+// TARGET ANGLES for that leg's hip/knee/ankle servos; the pbd motors do the
+// rest under their torque limits. Composes with pbd.src, body.src, tinybrain.
+
+func walk_dt() (v) { v = 0.0166666 }
+func walk_hz() (v) { v = 1.1 }   // gait cycle frequency the phase clock runs at
+
+// stateless deterministic noise hash in [-1,1] — PURE (no PRNG globals), so
+// the fitness function is safe to run concurrently in evolve workers
+func walk_noise(seed, t, i) (v) {
+	x := sin(float(seed) * 12.9898 + float(t) * 78.233 + float(i) * 37.719) * 43758.5453
+	v = (x - floor(x)) * 2.0 - 1.0
+}
+
+// per-leg controller inputs (11). `nz` adds +-1% sensor noise: policies
+// trained WITH noise are robust — the first noise-free champion walked 10.4m
+// in training but 6.7m after artifact save/load, because contact dynamics
+// are chaotic and it had overfit to exact weight bits.
+func walk_inputs(b, ph, jHipT, jKneeT, jAnkT, jHipO, cT, cO, nz, nseed, nt) (x) {
+	x = []float{}
+	x = append(x, sin(ph))
+	x = append(x, sin(ph + pi() / 2.0))
+	x = append(x, biped_pitch(b))
+	x = append(x, (biped_hip_h(b) - 0.96) * 4.0)
+	x = append(x, biped_vx(b, walk_dt()) / 2.0)
+	x = append(x, w_joint_angle(b.w, jHipT))
+	x = append(x, w_joint_angle(b.w, jKneeT))
+	x = append(x, w_joint_angle(b.w, jAnkT))
+	x = append(x, w_joint_angle(b.w, jHipO))
+	x = append(x, float(cT))
+	x = append(x, float(cO))
+	if nz > 0.0 {
+		i := 0
+		while i < len(x) {
+			x[i] = x[i] + nz * walk_noise(nseed, nt, i)
+			i = i + 1
+		}
+	}
+}
+
+// apply one leg's net outputs as servo targets (scaled into joint ranges)
+func walk_apply(b, out, jHip, jKnee, jAnk) {
+	w_set_joint_target(b.w, jHip, out[0] * 1.1)
+	w_set_joint_target(b.w, jKnee, (out[1] + 1.0) * 0.8)
+	w_set_joint_target(b.w, jAnk, out[2] * 0.5)
+}
+
+type WalkEp struct {
+	dist float
+	ticks int
+	fell bool
+	flight int
+	lowhip float
+}
+
+// run one episode: net drives both legs (phase-shifted) for maxTicks or fall.
+// noiseSeed > 0 turns on +-1% sensor noise (seeded, deterministic).
+func walk_episode(n, maxTicks, noiseSeed) (ep) {
+	ep = WalkEp{dist: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	nz := 0.0
+	if noiseSeed > 0 {
+		nz = 0.01
+	}
+	b := biped_new()
+	x0 := biped_hip_x(b)
+	t := 0
+	while t < maxTicks {
+		ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
+		cl := biped_contact_l(b)
+		cr := biped_contact_r(b)
+		outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, nz, noiseSeed, t))
+		outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
+		walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+		walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		biped_step(b, walk_dt())
+		if biped_contact_l(b) + biped_contact_r(b) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := biped_hip_h(b)
+		if h < 0.82 {
+			ep.lowhip = ep.lowhip + (0.82 - h)
+		}
+		t = t + 1
+		if biped_fallen(b) {
+			ep.fell = true
+			break
+		}
+	}
+	ep.ticks = t
+	ep.dist = biped_hip_x(b) - x0
+}
+
+// fitness for one episode: forward distance if the walker STAYS UP (+1
+// survival bonus; falls salvage a quarter — dive-sprints don't pay), minus
+// WALKING-shape penalties: flight time (a walk keeps a foot down; hopping
+// scored higher without this) and crouching (hip below 0.82)
+func walk_ep_score(ep, maxTicks) (f) {
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * float(ep.flight) / float(maxTicks)
+	f = f - 2.0 * ep.lowhip / float(maxTicks)
+}
+
+// robust fitness: the MEAN of two noise seeds — a policy must walk under
+// sensor noise, not only on one bit-exact trajectory (min-of-2 proved too
+// pessimistic for exploration: the GA stalled at barely-standing)
+func walk_fitness(n, maxTicks) (f) {
+	e1 := walk_episode(n, maxTicks, 101)
+	f1 := walk_ep_score(e1, maxTicks)
+	e2 := walk_episode(n, maxTicks, 202)
+	f2 := walk_ep_score(e2, maxTicks)
+	f = (f1 + f2) * 0.5
+}

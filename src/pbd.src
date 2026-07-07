@@ -1,0 +1,333 @@
+// machin-walker — src/pbd.src
+// A rigorous planar position-based-dynamics core for articulated bodies.
+// Pure MFL, headless, deterministic. The physics contract that makes the
+// walker honest as a robotics statement:
+//   * particles carry INVERSE MASS; every constraint splits its correction by
+//     inverse mass (no teleporting light parts with heavy ones)
+//   * actuation is INTERNAL ONLY: a joint motor is a torque-limited angle
+//     servo between two adjacent segments, applying equal-and-opposite
+//     mass-weighted rotations about the joint — momentum-conserving. There is
+//     no world-frame pulling, no balance assist, no velocity cap.
+//   * ground contact is non-penetration + Coulomb friction (static cone,
+//     kinetic slide); gravity and the ground are the only external effects
+//   * substepped integration (XPBD-style): many small steps with a few
+//     constraint iterations each beats one big step with many
+//
+// A World is a value struct of parallel slices; step functions mutate the
+// slice contents in place (MFL slices share backing storage).
+
+type World struct {
+	px []float
+	py []float
+	ox []float
+	oy []float
+	w []float
+	cbones []int
+	brest []float
+	cjoints []int
+	joff []float
+	jtarget []float
+	jstiff []float
+	jmaxcorr []float
+	jlo []float
+	jhi []float
+	contact []int
+}
+
+func w_gravity() (v) { v = -9.81 }
+func w_ground_mu() (v) { v = 0.9 }
+
+func world_new() (w) {
+	w = World{}
+}
+
+// add a particle; mass in kg (0 mass = pinned/infinite)
+func w_add_pt(w, x, y, mass) (i, w2) {
+	w2 = w
+	i = len(w2.px)
+	w2.px = append(w2.px, x)
+	w2.py = append(w2.py, y)
+	w2.ox = append(w2.ox, x)
+	w2.oy = append(w2.oy, y)
+	im := 0.0
+	if mass > 0.0 {
+		im = 1.0 / mass
+	}
+	w2.w = append(w2.w, im)
+	w2.contact = append(w2.contact, 0)
+}
+
+// rigid distance constraint between particles a,b at their current distance
+func w_add_bone(w, a, b) (w2) {
+	w2 = w
+	dx := w2.px[b] - w2.px[a]
+	dy := w2.py[b] - w2.py[a]
+	w2.cbones = append(w2.cbones, a)
+	w2.cbones = append(w2.cbones, b)
+	w2.brest = append(w2.brest, sqrt(dx * dx + dy * dy))
+}
+
+// joint motor at particle b between segments (b->a) and (b->c).
+// Angles are measured RELATIVE TO THE CREATION POSE (offset-normalized): the
+// pose the joint is built in reads as 0, so a straight limb never sits on the
+// +-pi wrap seam and limits/targets are symmetric around neutral. The motor
+// servos toward jtarget with per-iteration angular correction capped at
+// jmaxcorr (the torque-limit analog) and hard mechanical limits [jlo,jhi],
+// both relative to neutral. Returns the joint index.
+func w_add_joint(w, a, b, c, stiff, maxcorr, lo, hi) (ji, w2) {
+	w2 = w
+	ji = len(w2.jtarget)
+	w2.cjoints = append(w2.cjoints, a)
+	w2.cjoints = append(w2.cjoints, b)
+	w2.cjoints = append(w2.cjoints, c)
+	w2.joff = append(w2.joff, w_joint_angle_raw(w2, ji))
+	w2.jtarget = append(w2.jtarget, 0.0)
+	w2.jstiff = append(w2.jstiff, stiff)
+	w2.jmaxcorr = append(w2.jmaxcorr, maxcorr)
+	w2.jlo = append(w2.jlo, lo)
+	w2.jhi = append(w2.jhi, hi)
+}
+
+func wrap_pi(a) (o) {
+	o = a
+	while o > pi() {
+		o = o - 2.0 * pi()
+	}
+	while o < -pi() {
+		o = o + 2.0 * pi()
+	}
+}
+
+func w_joint_angle_raw(w, ji) (th) {
+	a := w.cjoints[ji * 3]
+	b := w.cjoints[ji * 3 + 1]
+	c := w.cjoints[ji * 3 + 2]
+	v1x := w.px[a] - w.px[b]
+	v1y := w.py[a] - w.py[b]
+	v2x := w.px[c] - w.px[b]
+	v2y := w.py[c] - w.py[b]
+	th = wrap_pi(atan2(v2y, v2x) - atan2(v1y, v1x))
+}
+
+// joint angle relative to the creation (neutral) pose
+func w_joint_angle(w, ji) (th) {
+	th = wrap_pi(w_joint_angle_raw(w, ji) - w.joff[ji])
+}
+
+func w_set_joint_target(w, ji, t) {
+	lo := w.jlo[ji]
+	hi := w.jhi[ji]
+	if t < lo {
+		t = lo
+	}
+	if t > hi {
+		t = hi
+	}
+	w.jtarget[ji] = t
+}
+
+// rotate particle i around pivot (cx,cy) by angle da
+func w_rot_pt(w, i, cx, cy, da) {
+	s := sin(da)
+	c := sin(da + pi() / 2.0)
+	dx := w.px[i] - cx
+	dy := w.py[i] - cy
+	w.px[i] = cx + dx * c - dy * s
+	w.py[i] = cy + dx * s + dy * c
+}
+
+func w_satisfy_bone(w, k) {
+	a := w.cbones[k * 2]
+	b := w.cbones[k * 2 + 1]
+	dx := w.px[b] - w.px[a]
+	dy := w.py[b] - w.py[a]
+	d := sqrt(dx * dx + dy * dy)
+	if d < 0.000001 {
+		return
+	}
+	wsum := w.w[a] + w.w[b]
+	if wsum < 0.000000001 {
+		return
+	}
+	diff := (d - w.brest[k]) / d / wsum
+	w.px[a] = w.px[a] + dx * diff * w.w[a]
+	w.py[a] = w.py[a] + dy * diff * w.w[a]
+	w.px[b] = w.px[b] - dx * diff * w.w[b]
+	w.py[b] = w.py[b] - dy * diff * w.w[b]
+}
+
+// the motor: rotate arm a and arm c about the joint in OPPOSITE directions,
+// split by effective angular mass (sum of point masses on each arm here: the
+// two arm endpoints), so reaction torques are equal and opposite.
+func w_satisfy_joint(w, ji) {
+	th := w_joint_angle(w, ji)
+	t := w.jtarget[ji]
+	// hard limits first
+	if th < w.jlo[ji] {
+		t = w.jlo[ji]
+	}
+	if th > w.jhi[ji] {
+		t = w.jhi[ji]
+	}
+	err := wrap_pi(t - th) * w.jstiff[ji]
+	mc := w.jmaxcorr[ji]
+	if err > mc {
+		err = mc
+	}
+	if err < -mc {
+		err = -mc
+	}
+	if absf2(err) < 0.0000001 {
+		return
+	}
+	a := w.cjoints[ji * 3]
+	b := w.cjoints[ji * 3 + 1]
+	c := w.cjoints[ji * 3 + 2]
+	// textbook PBD angular-constraint projection: displacements along the
+	// constraint gradients, scaled by inverse mass. grad_b = -(grad_a+grad_c),
+	// so total momentum change is EXACTLY zero — the pivot carries the
+	// reaction through the correct lever arms (this is what makes the motor an
+	// internal torque and a locked-joint statue statically stable).
+	rax := w.px[a] - w.px[b]
+	ray := w.py[a] - w.py[b]
+	rcx := w.px[c] - w.px[b]
+	rcy := w.py[c] - w.py[b]
+	la2 := rax * rax + ray * ray
+	lc2 := rcx * rcx + rcy * rcy
+	if la2 < 0.000000001 || lc2 < 0.000000001 {
+		return
+	}
+	gax := ray / la2
+	gay := 0.0 - rax / la2
+	gcx := 0.0 - rcy / lc2
+	gcy := rcx / lc2
+	gbx := 0.0 - gax - gcx
+	gby := 0.0 - gay - gcy
+	wa := w.w[a]
+	wb := w.w[b]
+	wc := w.w[c]
+	denom := wa * (gax * gax + gay * gay) + wb * (gbx * gbx + gby * gby) + wc * (gcx * gcx + gcy * gcy)
+	if denom < 0.000000001 {
+		return
+	}
+	lam := err / denom
+	w.px[a] = w.px[a] + lam * wa * gax
+	w.py[a] = w.py[a] + lam * wa * gay
+	w.px[b] = w.px[b] + lam * wb * gbx
+	w.py[b] = w.py[b] + lam * wb * gby
+	w.px[c] = w.px[c] + lam * wc * gcx
+	w.py[c] = w.py[c] + lam * wc * gcy
+}
+
+func absf2(x) (o) {
+	o = x
+	if o < 0.0 {
+		o = 0.0 - o
+	}
+}
+
+// ground plane y=0: non-penetration + Coulomb friction against the ORIGINAL
+// (pre-solve) position captured at substep start. Static within the cone,
+// kinetic slide beyond it. Marks contact flags for sensors.
+func w_ground(w, sx) {
+	i := 0
+	while i < len(w.px) {
+		if w.py[i] < 0.0 {
+			pen := 0.0 - w.py[i]
+			w.py[i] = 0.0
+			// tangential motion this substep relative to where it started
+			tdx := w.px[i] - sx[i]
+			mu := w_ground_mu()
+			lim := mu * pen
+			if absf2(tdx) <= lim {
+				// static friction: cancel tangential motion entirely
+				w.px[i] = sx[i]
+			} else {
+				// kinetic: allow slide minus the friction budget
+				if tdx > 0.0 {
+					w.px[i] = w.px[i] - lim
+				} else {
+					w.px[i] = w.px[i] + lim
+				}
+			}
+			w.contact[i] = 1
+		}
+		i = i + 1
+	}
+}
+
+// one full physics tick of dt seconds, in `substeps` XPBD substeps with
+// `iters` constraint iterations each.
+func w_step(w, dt, substeps, iters) {
+	sdt := dt / float(substeps)
+	s := 0
+	while s < substeps {
+		i := 0
+		while i < len(w.px) {
+			w.contact[i] = 0
+			i = i + 1
+		}
+		// integrate (verlet, per-substep)
+		sx := []float{}
+		i = 0
+		while i < len(w.px) {
+			sx = append(sx, w.px[i])
+			if w.w[i] > 0.0 {
+				vx := w.px[i] - w.ox[i]
+				vy := w.py[i] - w.oy[i]
+				w.ox[i] = w.px[i]
+				w.oy[i] = w.py[i]
+				w.px[i] = w.px[i] + vx
+				w.py[i] = w.py[i] + vy + w_gravity() * sdt * sdt
+			}
+			i = i + 1
+		}
+		it := 0
+		while it < iters {
+			j := 0
+			while j < len(w.jtarget) {
+				w_satisfy_joint(w, j)
+				j = j + 1
+			}
+			k := 0
+			while k < len(w.brest) {
+				w_satisfy_bone(w, k)
+				k = k + 1
+			}
+			w_ground(w, sx)
+			it = it + 1
+		}
+		s = s + 1
+	}
+}
+
+// diagnostics
+func w_com_x(w) (cx) {
+	m := 0.0
+	sxm := 0.0
+	i := 0
+	while i < len(w.px) {
+		if w.w[i] > 0.0 {
+			mi := 1.0 / w.w[i]
+			m = m + mi
+			sxm = sxm + w.px[i] * mi
+		}
+		i = i + 1
+	}
+	cx = sxm / m
+}
+
+func w_com_y(w) (cy) {
+	m := 0.0
+	sym := 0.0
+	i := 0
+	while i < len(w.px) {
+		if w.w[i] > 0.0 {
+			mi := 1.0 / w.w[i]
+			m = m + mi
+			sym = sym + w.py[i] * mi
+		}
+		i = i + 1
+	}
+	cy = sym / m
+}

@@ -1,0 +1,147 @@
+// machin-walker — game/walker_game.src
+// The 3D skeletal view of the learned walk. Dynamics are the same planar sim
+// the net was trained on (src/*.src, unchanged); this layer only gives the
+// skeleton its third dimension back at render time: legs and arms drawn at
+// their natural lateral offsets, pelvis/shoulder bars, a tracking camera.
+// Build: ./build.sh   Run from the repo root: ./walker-game
+// Self-captures screenshots at fixed frames (walker_shot_*.png) for verification.
+
+extern "raylib" {
+	header "raylib.h"
+	link "raylib" link "GL" link "m" link "pthread" link "dl" link "rt" link "X11"
+	cstruct Color { r u8 g u8 b u8 a u8 }
+	cstruct Vector3 { x f32 y f32 z f32 }
+	cstruct Camera3D { position Vector3 target Vector3 up Vector3 fovy f32 projection i32 }
+	fn InitWindow(i32, i32, string)
+	fn SetTargetFPS(i32)
+	fn WindowShouldClose() bool
+	fn BeginDrawing()
+	fn EndDrawing()
+	fn ClearBackground(Color)
+	fn CloseWindow()
+	fn BeginMode3D(Camera3D)
+	fn EndMode3D()
+	fn DrawGrid(i32, f32)
+	fn DrawCylinderEx(Vector3, Vector3, f32, f32, i32, Color)
+	fn DrawSphere(Vector3, f32, Color)
+	fn DrawCube(Vector3, f32, f32, f32, Color)
+	fn DrawLine3D(Vector3, Vector3, Color)
+	fn DrawText(string, i32, i32, i32, Color)
+	fn TakeScreenshot(string)
+}
+
+// world (x,y) + render z -> raylib Vector3
+func v3of(b, i, z) (v) {
+	v = Vector3{b.w.px[i], b.w.py[i], z}
+}
+
+func limb(a, bpt, r1, r2, col) {
+	DrawCylinderEx(a, bpt, r1, r2, 8, col)
+}
+
+func draw_walker(b) {
+	skin := Color{225, 200, 170, 255}
+	shirt := Color{70, 130, 200, 255}
+	pants := Color{60, 70, 90, 255}
+	shoe := Color{40, 40, 45, 255}
+	zL := -0.09
+	zR := 0.09
+	zAL := -0.22
+	zAR := 0.22
+	hip := v3of(b, b.hip, 0.0)
+	chest := v3of(b, b.chest, 0.0)
+	head := v3of(b, b.head, 0.0)
+	// torso: spine column + pelvis and shoulder bars
+	limb(hip, chest, 0.09, 0.11, shirt)
+	DrawCylinderEx(Vector3{b.w.px[b.hip], b.w.py[b.hip], zL}, Vector3{b.w.px[b.hip], b.w.py[b.hip], zR}, 0.07, 0.07, 8, pants)
+	DrawCylinderEx(Vector3{b.w.px[b.chest], b.w.py[b.chest], zAL}, Vector3{b.w.px[b.chest], b.w.py[b.chest], zAR}, 0.06, 0.06, 8, shirt)
+	DrawSphere(head, 0.11, skin)
+	limb(chest, head, 0.045, 0.045, skin)
+	// legs
+	limb(Vector3{b.w.px[b.hip], b.w.py[b.hip], zL}, v3of(b, b.kneeL, zL), 0.065, 0.05, pants)
+	limb(v3of(b, b.kneeL, zL), v3of(b, b.ankleL, zL), 0.05, 0.035, pants)
+	limb(v3of(b, b.ankleL, zL), v3of(b, b.toeL, zL), 0.035, 0.03, shoe)
+	limb(v3of(b, b.ankleL, zL), v3of(b, b.heelL, zL), 0.035, 0.03, shoe)
+	limb(Vector3{b.w.px[b.hip], b.w.py[b.hip], zR}, v3of(b, b.kneeR, zR), 0.065, 0.05, pants)
+	limb(v3of(b, b.kneeR, zR), v3of(b, b.ankleR, zR), 0.05, 0.035, pants)
+	limb(v3of(b, b.ankleR, zR), v3of(b, b.toeR, zR), 0.035, 0.03, shoe)
+	limb(v3of(b, b.ankleR, zR), v3of(b, b.heelR, zR), 0.035, 0.03, shoe)
+	// arms
+	limb(Vector3{b.w.px[b.chest], b.w.py[b.chest], zAL}, v3of(b, b.elbowL, zAL), 0.045, 0.04, shirt)
+	limb(v3of(b, b.elbowL, zAL), v3of(b, b.handL, zAL), 0.04, 0.03, skin)
+	limb(Vector3{b.w.px[b.chest], b.w.py[b.chest], zAR}, v3of(b, b.elbowR, zAR), 0.045, 0.04, shirt)
+	limb(v3of(b, b.elbowR, zAR), v3of(b, b.handR, zAR), 0.04, 0.03, skin)
+	// joints
+	DrawSphere(v3of(b, b.kneeL, zL), 0.05, pants)
+	DrawSphere(v3of(b, b.kneeR, zR), 0.05, pants)
+}
+
+func fmt2w(v) (s) {
+	neg := false
+	if v < 0.0 {
+		neg = true
+		v = -v
+	}
+	w := int(floor(v * 100.0 + 0.5))
+	frac := str(w % 100)
+	if len(frac) == 1 {
+		frac = "0" + frac
+	}
+	s = str(w / 100) + "." + frac
+	if neg {
+		s = "-" + s
+	}
+}
+
+func main() {
+	src := read_file("ml/models/walker.json")
+	if len(src) == 0 {
+		println("ml/models/walker.json missing — run ml/walk_train.src first")
+		exit(1)
+	}
+	n := net_load("ml/models/walker.json")
+	b := biped_new()
+	x0 := biped_hip_x(b)
+	InitWindow(1100, 700, "machin-walker - a tinybrain net learned to walk")
+	SetTargetFPS(60)
+	hud := Color{235, 235, 235, 255}
+	t := 0
+	for WindowShouldClose() == false {
+		if biped_fallen(b) == false {
+			ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
+			cl := biped_contact_l(b)
+			cr := biped_contact_r(b)
+			outL := net_forward(n, walk_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, 0.0, 0, 0))
+			outR := net_forward(n, walk_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, 0.0, 0, 0))
+			walk_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+			walk_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+			biped_step(b, walk_dt())
+			t = t + 1
+		}
+		hx := biped_hip_x(b)
+		BeginDrawing()
+		ClearBackground(Color{20, 24, 30, 255})
+		cam := Camera3D{Vector3{hx - 1.6, 1.7, 3.2}, Vector3{hx + 0.4, 0.9, 0.0}, Vector3{0.0, 1.0, 0.0}, 55.0, 0}
+		BeginMode3D(cam)
+		DrawGrid(60, 0.5)
+		// meter marks along the path
+		m := 0
+		while m <= 14 {
+			DrawCube(Vector3{float(m), 0.01, -1.2}, 0.04, 0.02, 0.4, Color{160, 160, 90, 255})
+			m = m + 1
+		}
+		draw_walker(b)
+		EndMode3D()
+		dist := hx - x0
+		DrawText("machin-walker: an 11-neuron-in tinybrain net drives 6 torque-limited joints", 20, 16, 18, hud)
+		DrawText("distance " + fmt2w(dist) + " m   speed " + fmt2w(biped_vx(b, walk_dt())) + " m/s   t " + fmt2w(float(t) * walk_dt()) + " s", 20, 44, 22, Color{120, 220, 130, 255})
+		if biped_fallen(b) {
+			DrawText("fell", 20, 74, 22, Color{230, 110, 90, 255})
+		}
+		EndDrawing()
+		if t == 240 || t == 600 || t == 1080 {
+			TakeScreenshot("walker_shot_" + str(t) + ".png")
+		}
+	}
+	CloseWindow()
+}

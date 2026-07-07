@@ -1,0 +1,27 @@
+// ml/walk_train.src — evolve the walking controller.
+// Run: cat src/pbd.src src/body.src src/walk_task.src ml/vendor/tinybrain.src ml/vendor/evolve.src ml/walk_train.src | machin encode /dev/stdin > /tmp/w.mfl && machin run /tmp/w.mfl
+// Outputs ml/models/walker.json + ml/models/walk_train.jsonl
+
+func main() {
+	maxTicks := 1200   // 20 simulated seconds
+	n := net_new([]int{11, 12, 3}, []string{"tanh", "tanh"}, 42)
+	fit := func(nn) {
+		return walk_fitness(nn, maxTicks)
+	}
+	cfg := evolve_cfg_default()
+	cfg.pop = 128
+	cfg.generations = 2000
+	cfg.elite = 6
+	cfg.mut_rate = 0.15
+	cfg.mut_sigma = 0.35
+	cfg.target_fitness = 11.0   // >= 10m walked AND still standing at the end
+	cfg.log_path = "ml/models/walk_train.jsonl"
+	cfg.print_every = 5
+	cfg.workers = 12
+	t0 := now_ms()
+	res, champ := evolve_run(n, fit, cfg)
+	ms := now_ms() - t0
+	net_save(champ, "ml/models/walker.json")
+	ep := walk_episode(champ, maxTicks, 999)
+	println("{\"artifact\":\"ml/models/walker.json\",\"train_ms\":" + str(ms) + ",\"generations\":" + str(res.generations) + ",\"evals\":" + str(res.evals) + ",\"best_fitness\":" + tb_fmt(res.best_fitness) + ",\"champion\":{\"dist_m\":" + tb_fmt(ep.dist) + ",\"seconds\":" + tb_fmt(float(ep.ticks) * 0.0166666) + ",\"fell\":" + str(ep.fell) + "}}")
+}

@@ -1,0 +1,176 @@
+// tests/pbd_test.src — the physics contract, enforced.
+// Run: cat src/pbd.src tests/pbd_test.src | machin encode /dev/stdin > /tmp/t.mfl && machin run /tmp/t.mfl
+
+var g_pass = 0
+var g_fail = 0
+
+func check(name, cond) {
+	if cond {
+		g_pass = g_pass + 1
+		println("  PASS  " + name)
+	} else {
+		g_fail = g_fail + 1
+		println("  FAIL  " + name)
+	}
+}
+
+func approx(a, b, eps) (r) {
+	r = absf2(a - b) <= eps
+}
+
+// a 3-particle chain with a motor at the middle, in free fall high above the
+// ground (never lands during the test): internal actuation must not shift the
+// center of mass horizontally — no swimming through air
+func test_momentum_conservation() {
+	w := world_new()
+	a := 0
+	a, w = w_add_pt(w, -0.5, 50.0, 2.0)
+	b := 0
+	b, w = w_add_pt(w, 0.0, 50.0, 1.0)
+	c := 0
+	c, w = w_add_pt(w, 0.5, 50.0, 3.0)
+	w = w_add_bone(w, a, b)
+	w = w_add_bone(w, b, c)
+	ji := 0
+	ji, w = w_add_joint(w, a, b, c, 1.0, 0.2, -3.0, 3.0)
+	cx0 := w_com_x(w)
+	// flail: swing the motor target back and forth while airborne
+	t := 0
+	while t < 60 {
+		tgt := 1.5
+		if t % 20 >= 10 {
+			tgt = -1.5
+		}
+		w_set_joint_target(w, ji, tgt)
+		w_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	cx1 := w_com_x(w)
+	check("airborne motor flailing does not translate the COM (drift " + str(absf2(cx1 - cx0)) + "m)", absf2(cx1 - cx0) < 0.01)
+}
+
+func test_bone_rigidity_under_load() {
+	w := world_new()
+	a := 0
+	a, w = w_add_pt(w, 0.0, 2.0, 1.0)
+	b := 0
+	b, w = w_add_pt(w, 0.0, 1.0, 10.0)
+	w = w_add_bone(w, a, b)
+	t := 0
+	while t < 120 {
+		w_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	dx := w.px[1] - w.px[0]
+	dy := w.py[1] - w.py[0]
+	d := sqrt(dx * dx + dy * dy)
+	check("bone keeps its length through a fall and landing (err " + str(absf2(d - 1.0)) + ")", approx(d, 1.0, 0.02))
+	check("stack rests ON the ground, not in it", w.py[1] >= -0.001)
+}
+
+func test_drop_settles() {
+	// a falling 4-particle box (cross-braced) must land and come to rest
+	w := world_new()
+	i0 := 0
+	i0, w = w_add_pt(w, 0.0, 1.5, 1.0)
+	i1 := 0
+	i1, w = w_add_pt(w, 0.4, 1.5, 1.0)
+	i2 := 0
+	i2, w = w_add_pt(w, 0.4, 1.9, 1.0)
+	i3 := 0
+	i3, w = w_add_pt(w, 0.0, 1.9, 1.0)
+	w = w_add_bone(w, i0, i1)
+	w = w_add_bone(w, i1, i2)
+	w = w_add_bone(w, i2, i3)
+	w = w_add_bone(w, i3, i0)
+	w = w_add_bone(w, i0, i2)
+	w = w_add_bone(w, i1, i3)
+	t := 0
+	while t < 240 {
+		w_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	v := absf2(w.px[0] - w.ox[0]) + absf2(w.py[0] - w.oy[0])
+	check("dropped box comes to rest (residual motion " + str(v) + ")", v < 0.0005)
+	check("box rests on the ground", approx(w.py[0], 0.0, 0.01))
+	check("box did not slide away (x " + str(w.px[0]) + ")", absf2(w.px[0]) < 0.15)
+}
+
+func test_friction_stops_slide() {
+	// a box shoved sideways must decelerate and stop (kinetic -> static)
+	w := world_new()
+	i0 := 0
+	i0, w = w_add_pt(w, 0.0, 0.0, 1.0)
+	i1 := 0
+	i1, w = w_add_pt(w, 0.4, 0.0, 1.0)
+	i2 := 0
+	i2, w = w_add_pt(w, 0.4, 0.4, 1.0)
+	i3 := 0
+	i3, w = w_add_pt(w, 0.0, 0.4, 1.0)
+	w = w_add_bone(w, i0, i1)
+	w = w_add_bone(w, i1, i2)
+	w = w_add_bone(w, i2, i3)
+	w = w_add_bone(w, i3, i0)
+	w = w_add_bone(w, i0, i2)
+	w = w_add_bone(w, i1, i3)
+	// shove: 2 m/s rightward. Verlet velocity is displacement PER SUBSTEP,
+	// so the offset uses sdt = dt/substeps (getting this wrong once made the
+	// shove 12 m/s — and the box slid 8.14m, exactly v^2/(2*mu*g): the
+	// kinetic friction model matches theory to 3 digits)
+	sdt := 0.0166666 / 6.0
+	k := 0
+	while k < 4 {
+		w.ox[k] = w.px[k] - 2.0 * sdt
+		k = k + 1
+	}
+	t := 0
+	while t < 180 {
+		w_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	v := absf2(w.px[0] - w.ox[0]) / 0.0166666 * 6.0
+	check("shoved box stops within 3s (residual v " + str(v) + " m/s)", v < 0.05)
+	// theory: v^2/(2*mu*g) = 4/(2*0.9*9.81) = 0.227m
+	check("slide distance matches Coulomb theory ~0.23m (x " + str(w.px[0]) + ")", w.px[0] > 0.1 && w.px[0] < 0.4)
+}
+
+func test_joint_limits() {
+	w := world_new()
+	a := 0
+	a, w = w_add_pt(w, -0.5, 3.0, 1.0)
+	b := 0
+	b, w = w_add_pt(w, 0.0, 3.0, 1.0)
+	c := 0
+	c, w = w_add_pt(w, 0.5, 3.0, 1.0)
+	w = w_add_bone(w, a, b)
+	w = w_add_bone(w, b, c)
+	ji := 0
+	// a "knee": angle starts at pi (straight), may only flex to [1.0, pi]
+	ji, w = w_add_joint(w, a, b, c, 1.0, 0.3, 1.0, pi())
+	// command far beyond the limit
+	w_set_joint_target(w, ji, -3.0)
+	t := 0
+	while t < 90 {
+		w_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	th := w_joint_angle(w, ji)
+	check("set_joint_target clamps into the mechanical range (target " + str(w.jtarget[ji]) + ")", w.jtarget[ji] >= 1.0)
+	check("joint never passes its hard limit (angle " + str(th) + ")", th > 0.9)
+}
+
+func main() {
+	println("=== pbd physics contract ===")
+	test_momentum_conservation()
+	test_bone_rigidity_under_load()
+	test_drop_settles()
+	test_friction_stops_slide()
+	test_joint_limits()
+	println("=== summary ===")
+	println("PASS " + str(g_pass) + "   FAIL " + str(g_fail))
+	if g_fail > 0 {
+		println("THERE WERE FAILURES")
+		exit(1)
+	}
+	println("ALL TESTS PASSED")
+}

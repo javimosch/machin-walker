@@ -1,0 +1,5 @@
+/vendor/
+/walker-game
+*.mfl
+walker_shot_*.png
+/train.log

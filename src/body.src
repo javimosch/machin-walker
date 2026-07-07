@@ -1,0 +1,181 @@
+// machin-walker — src/body.src
+// The humanoid: a 1.75m / ~70kg biped built on the pbd core. Planar (sagittal)
+// dynamics — the Walker2D-standard configuration real planar robots used.
+// Segment masses follow human proportions (torso-heavy, light feet). All
+// actuation is the pbd joint motors; nothing else touches the body.
+//
+// Particle layout (indices in Biped):
+//   head, chest, hip,
+//   kneeL, ankleL, toeL, heelL,   kneeR, ankleR, toeR, heelR,
+//   elbowL, handL,                elbowR, handR
+// Joints (all relative-to-neutral; neutral = standing straight):
+//   jSpine (head,chest,hip)  — stiff passive posture spring
+//   jHipL/R (chest,hip,knee) — net-controlled
+//   jKneeL/R (hip,knee,ankle) — net-controlled, cannot hyperextend
+//   jAnkL/R (knee,ankle,toe) — net-controlled
+//   jShL/R (hip,chest,elbow) — passive hang (v1)
+//   jElbL/R (chest,elbow,hand) — passive
+
+type Biped struct {
+	w World
+	head int
+	chest int
+	hip int
+	kneeL int
+	ankleL int
+	toeL int
+	heelL int
+	kneeR int
+	ankleR int
+	toeR int
+	heelR int
+	elbowL int
+	handL int
+	elbowR int
+	handR int
+	jSpine int
+	jHipL int
+	jKneeL int
+	jAnkL int
+	jHipR int
+	jKneeR int
+	jAnkR int
+	jShL int
+	jElbL int
+	jShR int
+	jElbR int
+}
+
+// motor authority (per-iteration angular correction caps). Calibrated to
+// human-ish joint speeds: cap*iters/substep_dt ~= 11 rad/s for the hip —
+// with 5x this the first evolved champion was a 3.3 m/s dive-sprint exploit
+func b_hip_pow() (v) { v = 0.0042 }
+func b_knee_pow() (v) { v = 0.0048 }
+func b_ank_pow() (v) { v = 0.0030 }
+
+func biped_leg(w, hip, chest, side) (knee, ankle, toe, heel, jHip, jKnee, jAnk, w2) {
+	w2 = w
+	// side is a tiny x stagger so L/R joints are distinguishable at spawn (planar)
+	knee, w2 = w_add_pt(w2, side * 0.001, 0.52, 7.0)
+	ankle, w2 = w_add_pt(w2, side * 0.001, 0.08, 3.5)
+	toe, w2 = w_add_pt(w2, 0.16 + side * 0.001, 0.0, 0.7)
+	heel, w2 = w_add_pt(w2, -0.08 + side * 0.001, 0.0, 0.7)
+	w2 = w_add_bone(w2, hip, knee)
+	w2 = w_add_bone(w2, knee, ankle)
+	w2 = w_add_bone(w2, ankle, toe)
+	w2 = w_add_bone(w2, ankle, heel)
+	w2 = w_add_bone(w2, toe, heel)
+	// hip: swing thigh -1.2 (extend back) .. +1.6 (flex forward)
+	jHip, w2 = w_add_joint(w2, chest, hip, knee, 0.9, b_hip_pow(), -1.2, 1.6)
+	// knee: 0 = straight; flexion only (positive bends backward), no hyperextension
+	jKnee, w2 = w_add_joint(w2, hip, knee, ankle, 0.9, b_knee_pow(), 0.0, 2.4)
+	// ankle: dorsi/plantar-flex around neutral
+	jAnk, w2 = w_add_joint(w2, knee, ankle, toe, 0.9, b_ank_pow(), -0.9, 0.9)
+}
+
+func biped_arm(w, chest, hip, side) (elbow, hand, jSh, jElb, w2) {
+	w2 = w
+	elbow, w2 = w_add_pt(w2, side * 0.002, 1.15, 2.0)
+	hand, w2 = w_add_pt(w2, side * 0.002, 0.88, 1.2)
+	w2 = w_add_bone(w2, chest, elbow)
+	w2 = w_add_bone(w2, elbow, hand)
+	// passive shoulder/elbow: weak springs to hang, free to swing
+	jSh, w2 = w_add_joint(w2, hip, chest, elbow, 0.15, 0.004, -1.4, 1.4)
+	jElb, w2 = w_add_joint(w2, chest, elbow, hand, 0.15, 0.004, -0.2, 2.0)
+}
+
+func biped_new() (b) {
+	b = Biped{}
+	w := world_new()
+	hip0, wa := w_add_pt(w, 0.0, 0.96, 24.0)
+	b.hip = hip0
+	chest0, wb := w_add_pt(wa, 0.0, 1.45, 16.0)
+	b.chest = chest0
+	head0, wc := w_add_pt(wb, 0.0, 1.68, 5.0)
+	b.head = head0
+	w = w_add_bone(wc, b.hip, b.chest)
+	w = w_add_bone(w, b.chest, b.head)
+	// spine posture: stiff passive servo holding head-chest-hip straight
+	spine0, wd := w_add_joint(w, b.head, b.chest, b.hip, 0.8, 0.0042, -0.5, 0.5)
+	b.jSpine = spine0
+	w = wd
+	k1, a1, t1, h1, j1, j2, j3, w1 := biped_leg(w, b.hip, b.chest, -1.0)
+	b.kneeL = k1
+	b.ankleL = a1
+	b.toeL = t1
+	b.heelL = h1
+	b.jHipL = j1
+	b.jKneeL = j2
+	b.jAnkL = j3
+	k2, a2, t2, h2, j4, j5, j6, w2 := biped_leg(w1, b.hip, b.chest, 1.0)
+	b.kneeR = k2
+	b.ankleR = a2
+	b.toeR = t2
+	b.heelR = h2
+	b.jHipR = j4
+	b.jKneeR = j5
+	b.jAnkR = j6
+	e1, hd1, s1, el1, w3 := biped_arm(w2, b.chest, b.hip, -1.0)
+	b.elbowL = e1
+	b.handL = hd1
+	b.jShL = s1
+	b.jElbL = el1
+	e2, hd2, s2, el2, w4 := biped_arm(w3, b.chest, b.hip, 1.0)
+	b.elbowR = e2
+	b.handR = hd2
+	b.jShR = s2
+	b.jElbR = el2
+	b.w = w4
+}
+
+func biped_step(b, dt) {
+	w_step(b.w, dt, 6, 8)
+}
+
+// ── sensors ──
+
+// torso pitch: angle of hip->chest vs vertical (radians; + = leaning forward/+x)
+func biped_pitch(b) (p) {
+	dx := b.w.px[b.chest] - b.w.px[b.hip]
+	dy := b.w.py[b.chest] - b.w.py[b.hip]
+	p = atan2(dx, dy)
+}
+
+func biped_hip_h(b) (h) {
+	h = b.w.py[b.hip]
+}
+
+func biped_hip_x(b) (x) {
+	x = b.w.px[b.hip]
+}
+
+// forward velocity of the hip in m/s (verlet: displacement per substep / sdt)
+func biped_vx(b, dt) (v) {
+	v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0)
+}
+
+func biped_contact_l(b) (c) {
+	c = 0
+	if b.w.contact[b.toeL] == 1 || b.w.contact[b.heelL] == 1 {
+		c = 1
+	}
+}
+
+func biped_contact_r(b) (c) {
+	c = 0
+	if b.w.contact[b.toeR] == 1 || b.w.contact[b.heelR] == 1 {
+		c = 1
+	}
+}
+
+// fallen = torso down: chest too low OR extreme pitch
+func biped_fallen(b) (f) {
+	f = false
+	if b.w.py[b.chest] < 0.85 {
+		f = true
+	}
+	p := biped_pitch(b)
+	if absf2(p) > 1.1 {
+		f = true
+	}
+}
