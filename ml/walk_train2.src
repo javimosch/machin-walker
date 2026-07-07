@@ -1,0 +1,73 @@
+// ml/walk_train2.src — the clone-then-fine-tune walking pipeline:
+//   1. parametric search over the open-loop CPG (the walking "expert")
+//   2. SGD-clone the CPG into the net (random sensor values, CPG labels —
+//      the net learns the phase->targets map, ignoring sensors for now)
+//   3. evolve with warm_start + parallel workers: feedback grows on top
+// Run on rbm21: see README (train there — 14 cores).
+
+func main() {
+	maxTicks := 1200
+
+	// ── 1. find an open-loop gait ──
+	tb_seed(42)
+	p, ps := cpg_search(400, 300, maxTicks)
+	cep := cpg_episode(p, maxTicks)
+	println("{\"phase\":\"cpg\",\"score\":" + tb_fmt(ps) + ",\"dist\":" + tb_fmt(cep.dist) + ",\"fell\":" + str(cep.fell) + ",\"flight\":" + str(cep.flight) + ",\"params\":" + tb_vec_json(p) + "}")
+	flush()
+
+	// ── 2. clone it into the net ──
+	// inputs: the 11 walk sensors with RANDOM plausible values except the two
+	// phase channels, which carry the real phase — the clone must reproduce
+	// the CPG for any sensor reading
+	n := net_new([]int{11, 14, 3}, []string{"tanh", "tanh"}, 42)
+	ds := Dataset{}
+	i := 0
+	while i < 4000 {
+		ph := tb_randf_range(0.0, 2.0 * pi())
+		x := []float{}
+		x = append(x, sin(ph))
+		x = append(x, sin(ph + pi() / 2.0))
+		x = append(x, tb_randf_range(-0.4, 0.4))   // pitch
+		x = append(x, tb_randf_range(-0.6, 0.3))   // hip height dev
+		x = append(x, tb_randf_range(-0.3, 0.8))   // vx
+		x = append(x, tb_randf_range(-1.0, 1.2))   // hip angle
+		x = append(x, tb_randf_range(0.0, 1.8))    // knee angle
+		x = append(x, tb_randf_range(-0.7, 0.7))   // ankle angle
+		x = append(x, tb_randf_range(-1.0, 1.2))   // other hip
+		x = append(x, float(int(tb_randf() * 2.0)))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		y := []float{}
+		y = append(y, cpg_hip(p, ph) / 1.1)
+		y = append(y, cpg_knee(p, ph) / 0.8 - 1.0)
+		y = append(y, cpg_ank(p, ph) / 0.5)
+		ds.x = append(ds.x, x)
+		ds.y = append(ds.y, y)
+		i = i + 1
+	}
+	loss := net_train_sgd(n, ds, 200, 0.02)
+	cloneFit := walk_fitness(n, maxTicks)
+	println("{\"phase\":\"clone\",\"mse\":" + tb_fmt(loss) + ",\"fitness\":" + tb_fmt(cloneFit) + "}")
+	flush()
+
+	// ── 3. fine-tune: sensor feedback grows on the cloned gait ──
+	fit := func(nn) {
+		return walk_fitness(nn, maxTicks)
+	}
+	cfg := evolve_cfg_default()
+	cfg.pop = 128
+	cfg.generations = 1500
+	cfg.elite = 8
+	cfg.mut_rate = 0.12
+	cfg.mut_sigma = 0.15
+	cfg.warm_start = true
+	cfg.workers = 12
+	cfg.target_fitness = 11.0
+	cfg.log_path = "ml/models/walk_train.jsonl"
+	cfg.print_every = 10
+	t0 := now_ms()
+	res, champ := evolve_run(n, fit, cfg)
+	ms := now_ms() - t0
+	net_save(champ, "ml/models/walker.json")
+	ep := walk_episode(champ, maxTicks, 999)
+	println("{\"artifact\":\"ml/models/walker.json\",\"train_ms\":" + str(ms) + ",\"generations\":" + str(res.generations) + ",\"best_fitness\":" + tb_fmt(res.best_fitness) + ",\"champion\":{\"dist_m\":" + tb_fmt(ep.dist) + ",\"seconds\":" + tb_fmt(float(ep.ticks) * 0.0166666) + ",\"fell\":" + str(ep.fell) + ",\"flight_ticks\":" + str(ep.flight) + "}}")
+}

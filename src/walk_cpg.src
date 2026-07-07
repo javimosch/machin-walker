@@ -1,0 +1,93 @@
+// machin-walker — src/walk_cpg.src
+// An open-loop CPG (central pattern generator) gait: sinusoidal joint targets
+// parameterized by 6 numbers. Not the product — the EXPERT for the clone-then-
+// fine-tune pipeline (tinybrain doctrine): a parametric search finds a gait
+// that shuffles forward open-loop; SGD clones it into the net; evolve
+// (warm_start) grows sensor feedback on top.
+//
+// params: [hipAmp, hipOff, kneeAmp, kneePhase, ankAmp, ankPhase]
+
+func cpg_hip(p, ph) (v) {
+	v = p[1] + p[0] * sin(ph)
+}
+
+func cpg_knee(p, ph) (v) {
+	v = p[2] * (0.5 + 0.5 * sin(ph + p[3]))
+}
+
+func cpg_ank(p, ph) (v) {
+	v = p[4] * sin(ph + p[5])
+}
+
+// run the open-loop gait (no net) and score it with the SAME walking fitness
+func cpg_episode(p, maxTicks) (ep) {
+	ep = WalkEp{dist: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	b := biped_new()
+	x0 := biped_hip_x(b)
+	t := 0
+	while t < maxTicks {
+		ph := 2.0 * pi() * walk_hz() * float(t) * walk_dt()
+		w_set_joint_target(b.w, b.jHipL, cpg_hip(p, ph))
+		w_set_joint_target(b.w, b.jKneeL, cpg_knee(p, ph))
+		w_set_joint_target(b.w, b.jAnkL, cpg_ank(p, ph))
+		w_set_joint_target(b.w, b.jHipR, cpg_hip(p, ph + pi()))
+		w_set_joint_target(b.w, b.jKneeR, cpg_knee(p, ph + pi()))
+		w_set_joint_target(b.w, b.jAnkR, cpg_ank(p, ph + pi()))
+		biped_step(b, walk_dt())
+		if biped_contact_l(b) + biped_contact_r(b) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := biped_hip_h(b)
+		if h < 0.82 {
+			ep.lowhip = ep.lowhip + (0.82 - h)
+		}
+		t = t + 1
+		if biped_fallen(b) {
+			ep.fell = true
+			break
+		}
+	}
+	ep.ticks = t
+	ep.dist = biped_hip_x(b) - x0
+}
+
+func cpg_score(p, maxTicks) (f) {
+	f = walk_ep_score(cpg_episode(p, maxTicks), maxTicks)
+}
+
+// random search + gaussian refinement over the 6 CPG params
+func cpg_search(samples, refines, maxTicks) (best, bestScore) {
+	best = []float{0.3, 0.0, 0.5, 1.5, 0.2, 0.0}
+	bestScore = cpg_score(best, maxTicks)
+	i := 0
+	while i < samples {
+		p := []float{}
+		p = append(p, tb_randf_range(0.1, 0.6))     // hipAmp
+		p = append(p, tb_randf_range(-0.25, 0.25))  // hipOff
+		p = append(p, tb_randf_range(0.1, 1.0))     // kneeAmp
+		p = append(p, tb_randf_range(0.0, 6.28))    // kneePhase
+		p = append(p, tb_randf_range(0.0, 0.5))     // ankAmp
+		p = append(p, tb_randf_range(0.0, 6.28))    // ankPhase
+		s := cpg_score(p, maxTicks)
+		if s > bestScore {
+			bestScore = s
+			best = p
+		}
+		i = i + 1
+	}
+	i = 0
+	while i < refines {
+		p := []float{}
+		k := 0
+		while k < 6 {
+			p = append(p, best[k] + tb_randf_range(-0.08, 0.08))
+			k = k + 1
+		}
+		s := cpg_score(p, maxTicks)
+		if s > bestScore {
+			bestScore = s
+			best = p
+		}
+		i = i + 1
+	}
+}
