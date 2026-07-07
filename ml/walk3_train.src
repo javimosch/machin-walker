@@ -1,0 +1,188 @@
+// ml/walk3_train.src — 3D LATERAL-BALANCE training (backlog M2). Runs AFTER
+// the 2D gate passes: the 2D champion becomes the TEACHER.
+//   1. distill: sample random states; the 2D net labels the three sagittal
+//      outputs on the projected 13-input view; frontal outputs get a small
+//      weight-shift rhythm prior (same-phase for both legs = alternating
+//      world-frame lean, like human gait)
+//   2. harness curriculum (pitch+roll support) with the 3-level blended
+//      fitness, annealing to zero
+//   3. assist-free gated rounds: saved artifact must walk >=10m straight
+//      (drift-penalized), zero falls, <8% flight on 5 never-used seeds
+// Compose: src/pbd.src src/body.src src/walk_task.src (teacher sim) is NOT
+// needed — only the teacher NET; this composes pbd3/body3/walk3 + tinybrain.
+
+func w3fit(n, maxTicks, base, assist) (f) {
+	s1 := walk3_ep_score(walk3_episode_h(n, maxTicks, base, assist), maxTicks)
+	s2 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 17, assist / 3.0), maxTicks)
+	s3 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 34, 0.0), maxTicks)
+	f = (s1 + s2 + 2.0 * s3) / 4.0
+}
+
+func w3gate(n, maxTicks) (minDist, falls, maxFlight, maxDrift) {
+	minDist = 1000000.0
+	falls = 0
+	maxFlight = 0
+	maxDrift = 0.0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := walk3_episode_h(n, maxTicks, sd, 0.0)
+		if ep.dist < minDist {
+			minDist = ep.dist
+		}
+		if ep.fell {
+			falls = falls + 1
+		}
+		if ep.flight > maxFlight {
+			maxFlight = ep.flight
+		}
+		if ep.drift > maxDrift {
+			maxDrift = ep.drift
+		}
+	}
+}
+
+func main() {
+	maxTicks := 1200
+
+	// ── 1. distill the 2D teacher into the 3D net ──
+	teacher := net_load("ml/models/walker.json")
+	if teacher.tinybrain != 1 || teacher.topology[0] != 13 {
+		println("{\"error\":\"need the gated 13-input 2D champion at ml/models/walker.json first\"}")
+		exit(1)
+	}
+	tb_seed(42)
+	n := net_new([]int{18, 20, 5}, []string{"tanh", "tanh"}, 42)
+	ds := Dataset{}
+	i := 0
+	while i < 6000 {
+		ph := tb_randf_range(0.0, 2.0 * pi())
+		// the shared sagittal state
+		pitch := tb_randf_range(-0.4, 0.4)
+		prate := tb_randf_range(-0.8, 0.8)
+		hdev := tb_randf_range(-0.6, 0.3)
+		vx := tb_randf_range(-0.3, 0.8)
+		vy := tb_randf_range(-0.6, 0.6)
+		hip := tb_randf_range(-1.0, 1.2)
+		knee := tb_randf_range(-1.8, 0.0)
+		ank := tb_randf_range(-0.7, 0.7)
+		hipO := tb_randf_range(-1.0, 1.2)
+		cT := float(int(tb_randf() * 2.0))
+		cO := float(int(tb_randf() * 2.0))
+		// lateral state (the teacher never saw these; the prior handles them)
+		roll := tb_randf_range(-0.25, 0.25)
+		rrate := tb_randf_range(-0.6, 0.6)
+		vz := tb_randf_range(-0.4, 0.4)
+		hipF := tb_randf_range(-0.35, 0.35)
+		ankF := tb_randf_range(-0.25, 0.25)
+		x := []float{}
+		x = append(x, sin(ph))
+		x = append(x, sin(ph + pi() / 2.0))
+		x = append(x, pitch)
+		x = append(x, prate)
+		x = append(x, roll)
+		x = append(x, rrate)
+		x = append(x, hdev)
+		x = append(x, vx)
+		x = append(x, vy)
+		x = append(x, vz)
+		x = append(x, hip)
+		x = append(x, knee)
+		x = append(x, ank)
+		x = append(x, hipF)
+		x = append(x, ankF)
+		x = append(x, hipO)
+		x = append(x, cT)
+		x = append(x, cO)
+		// teacher's view (13 inputs, same order as the 2D task)
+		tx := []float{}
+		tx = append(tx, sin(ph))
+		tx = append(tx, sin(ph + pi() / 2.0))
+		tx = append(tx, pitch)
+		tx = append(tx, prate)
+		tx = append(tx, hdev)
+		tx = append(tx, vx)
+		tx = append(tx, vy)
+		tx = append(tx, hip)
+		tx = append(tx, knee)
+		tx = append(tx, ank)
+		tx = append(tx, hipO)
+		tx = append(tx, cT)
+		tx = append(tx, cO)
+		tout := net_forward(teacher, tx)
+		y := []float{}
+		y = append(y, tout[0])
+		y = append(y, tout[1])
+		y = append(y, tout[2])
+		// frontal prior: rhythmic weight shift + a stabilizing lean response
+		y = append(y, 0.35 * sin(ph) - 0.8 * roll)
+		y = append(y, -0.5 * roll)
+		ds.x = append(ds.x, x)
+		ds.y = append(ds.y, y)
+		i = i + 1
+	}
+	loss := net_train_sgd(n, ds, 200, 0.02)
+	println("{\"phase\":\"distill\",\"mse\":" + tb_fmt(loss) + ",\"seed_fitness\":" + tb_fmt(w3fit(n, maxTicks, 900, 0.5)) + "}")
+	flush()
+
+	// ── 2. harness curriculum ──
+	assists := []float{0.8, 0.5, 0.32, 0.2, 0.13, 0.08, 0.05, 0.03, 0.018, 0.01, 0.005, 0.0}
+	r := 0
+	while r < len(assists) {
+		a := assists[r]
+		base := 3000 + r * 500
+		fit := func(nn) {
+			return w3fit(nn, maxTicks, base, a)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 96
+		cfg.generations = 150
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.15
+		if a < 0.1 {
+			cfg.generations = 250
+			cfg.mut_sigma = 0.08
+		}
+		cfg.warm_start = true
+		cfg.workers = 6
+		cfg.target_fitness = 11.0
+		cfg.print_every = 0
+		res, champ := evolve_run(n, fit, cfg)
+		net_save(champ, "ml/models/walker3_h.json")
+		n = net_load("ml/models/walker3_h.json")
+		println("{\"harness3_round\":" + str(r) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + "}")
+		flush()
+		r = r + 1
+	}
+
+	// ── 3. assist-free gated rounds ──
+	round := 0
+	while round < 12 {
+		base := 50000 + round * 1000
+		fit := func(nn) {
+			return w3fit(nn, maxTicks, base, 0.0)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 96
+		cfg.generations = 200
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.08
+		cfg.warm_start = true
+		cfg.workers = 6
+		cfg.target_fitness = 12.0
+		cfg.print_every = 0
+		res, champ := evolve_run(n, fit, cfg)
+		net_save(champ, "ml/models/walker3.json")
+		m := net_load("ml/models/walker3.json")
+		minDist, falls, maxFlight, maxDrift := w3gate(m, maxTicks)
+		println("{\"gate3_round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight\":" + str(maxFlight) + ",\"max_drift\":" + tb_fmt(maxDrift) + "}}")
+		flush()
+		if falls == 0 && minDist >= 10.0 && maxFlight < 96 {
+			println("{\"status\":\"3D GATE PASSED\",\"artifact\":\"ml/models/walker3.json\",\"rounds\":" + str(round + 1) + "}")
+			return
+		}
+		n = m
+		round = round + 1
+	}
+	println("{\"status\":\"3D gate not passed — see last gate numbers\"}")
+}
