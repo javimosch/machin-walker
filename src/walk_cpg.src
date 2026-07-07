@@ -63,11 +63,11 @@ func cpg_search(samples, refines, maxTicks) (best, bestScore) {
 	i := 0
 	while i < samples {
 		p := []float{}
-		p = append(p, tb_randf_range(0.1, 0.6))     // hipAmp
+		p = append(p, tb_randf_range(0.1, 0.8))     // hipAmp
 		p = append(p, tb_randf_range(-0.25, 0.25))  // hipOff
-		p = append(p, tb_randf_range(-1.0, -0.1))   // kneeAmp (negative: human flexion)
+		p = append(p, tb_randf_range(-1.3, -0.1))   // kneeAmp (negative: human flexion)
 		p = append(p, tb_randf_range(0.0, 6.28))    // kneePhase
-		p = append(p, tb_randf_range(0.0, 0.5))     // ankAmp
+		p = append(p, tb_randf_range(0.0, 0.6))     // ankAmp
 		p = append(p, tb_randf_range(0.0, 6.28))    // ankPhase
 		s := cpg_score(p, maxTicks)
 		if s > bestScore {

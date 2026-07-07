@@ -106,6 +106,11 @@ func walk_ep_score(ep, maxTicks) (f) {
 	}
 	f = f - 2.0 * float(ep.flight) / float(maxTicks)
 	f = f - 2.0 * ep.lowhip / float(maxTicks)
+	// WALKING is the deliverable: beyond 8% airborne it's running/leaping and
+	// pays like a fall — otherwise a 26m leaper outscores a clean 10m walker
+	if float(ep.flight) > 0.08 * float(maxTicks) {
+		f = 0.25 * ep.dist
+	}
 }
 
 // robust fitness: the MEAN of two noise seeds — a policy must walk under

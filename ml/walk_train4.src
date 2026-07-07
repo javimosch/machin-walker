@@ -21,9 +21,10 @@ func round_fitness(n, maxTicks, base) (f) {
 	}
 }
 
-func gate_eval(n, maxTicks) (minDist, falls) {
+func gate_eval(n, maxTicks) (minDist, falls, maxFlight) {
 	minDist = 1000000.0
 	falls = 0
+	maxFlight = 0
 	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
 		ep := walk_episode(n, maxTicks, sd)
 		if ep.dist < minDist {
@@ -31,6 +32,9 @@ func gate_eval(n, maxTicks) (minDist, falls) {
 		}
 		if ep.fell {
 			falls = falls + 1
+		}
+		if ep.flight > maxFlight {
+			maxFlight = ep.flight
 		}
 	}
 }
@@ -57,10 +61,10 @@ func main() {
 		res, champ := evolve_run(n, fit, cfg)
 		net_save(champ, "ml/models/walker_robust.json")
 		m := net_load("ml/models/walker_robust.json")
-		minDist, falls := gate_eval(m, maxTicks)
-		println("{\"round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + "}}")
+		minDist, falls, maxFlight := gate_eval(m, maxTicks)
+		println("{\"round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight\":" + str(maxFlight) + "}}")
 		flush()
-		if falls == 0 && minDist >= 10.0 {
+		if falls == 0 && minDist >= 10.0 && maxFlight < 96 {
 			println("{\"status\":\"GATE PASSED\",\"artifact\":\"ml/models/walker_robust.json\",\"rounds\":" + str(round + 1) + "}")
 			return
 		}
