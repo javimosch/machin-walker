@@ -1,0 +1,157 @@
+// tests/pbd3_test.src — the 3D physics contract.
+// Run via tests/run_tests.sh (3D suite).
+
+var g_pass = 0
+var g_fail = 0
+
+func check(name, cond) {
+	if cond {
+		g_pass = g_pass + 1
+		println("  PASS  " + name)
+	} else {
+		g_fail = g_fail + 1
+		println("  FAIL  " + name)
+	}
+}
+
+func approx(a, b, eps) (r) {
+	r = absf3(a - b) <= eps
+}
+
+// airborne motor flailing must not translate the COM in x OR z
+func test_momentum_3d() {
+	w := world3_new()
+	a := 0
+	a, w = w3_add_pt(w, -0.5, 50.0, 0.1, 2.0)
+	b := 0
+	b, w = w3_add_pt(w, 0.0, 50.0, 0.0, 1.0)
+	c := 0
+	c, w = w3_add_pt(w, 0.5, 50.0, -0.1, 3.0)
+	w = w3_add_bone(w, a, b)
+	w = w3_add_bone(w, b, c)
+	js := 0
+	js, w = w3_add_joint(w, a, b, c, 0, 1.0, 0.2, -3.0, 3.0)
+	jf := 0
+	jf, w = w3_add_joint(w, a, b, c, 1, 1.0, 0.2, -3.0, 3.0)
+	cx0, _, cz0 := w3_com(w)
+	t := 0
+	while t < 60 {
+		tgt := 1.2
+		if t % 20 >= 10 {
+			tgt = -1.2
+		}
+		w3_set_joint_target(w, js, tgt)
+		w3_set_joint_target(w, jf, 0.0 - tgt)
+		w3_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	cx1, _, cz1 := w3_com(w)
+	check("3d flail: COM x drift " + str(absf3(cx1 - cx0)) + "m", absf3(cx1 - cx0) < 0.01)
+	check("3d flail: COM z drift " + str(absf3(cz1 - cz0)) + "m", absf3(cz1 - cz0) < 0.01)
+}
+
+// a diagonal 3D shove must slide along its direction and stop per Coulomb
+func test_friction_cone() {
+	w := world3_new()
+	i0 := 0
+	i0, w = w3_add_pt(w, 0.0, 0.0, 0.0, 1.0)
+	i1 := 0
+	i1, w = w3_add_pt(w, 0.4, 0.0, 0.0, 1.0)
+	i2 := 0
+	i2, w = w3_add_pt(w, 0.4, 0.0, 0.4, 1.0)
+	i3 := 0
+	i3, w = w3_add_pt(w, 0.0, 0.0, 0.4, 1.0)
+	i4 := 0
+	i4, w = w3_add_pt(w, 0.2, 0.4, 0.2, 1.0)
+	w = w3_add_bone(w, i0, i1)
+	w = w3_add_bone(w, i1, i2)
+	w = w3_add_bone(w, i2, i3)
+	w = w3_add_bone(w, i3, i0)
+	w = w3_add_bone(w, i0, i2)
+	w = w3_add_bone(w, i1, i3)
+	w = w3_add_bone(w, i0, i4)
+	w = w3_add_bone(w, i1, i4)
+	w = w3_add_bone(w, i2, i4)
+	w = w3_add_bone(w, i3, i4)
+	// shove at 2 m/s along the diagonal (x=z)
+	sdt := 0.0166666 / 6.0
+	vc := 2.0 / sqrt(2.0) * sdt
+	k := 0
+	while k < 5 {
+		w.ox[k] = w.px[k] - vc
+		w.oz[k] = w.pz[k] - vc
+		k = k + 1
+	}
+	t := 0
+	while t < 180 {
+		w3_step(w, 0.0166666, 6, 6)
+		t = t + 1
+	}
+	// theory: v^2/(2 mu g) = 4/(2*0.9*9.81) = 0.227m along the diagonal
+	trav := sqrt(w.px[0] * w.px[0] + w.pz[0] * w.pz[0])
+	check("diagonal slide matches Coulomb ~0.23m (got " + str(trav) + ")", trav > 0.12 && trav < 0.38)
+	check("slide direction preserved (x=z, got dx=" + str(w.px[0]) + " dz=" + str(w.pz[0]) + ")", approx(w.px[0], w.pz[0], 0.03))
+	v := (absf3(w.px[0] - w.ox[0]) + absf3(w.pz[0] - w.oz[0])) / sdt
+	check("box at rest (residual v " + str(v) + ")", v < 0.05)
+}
+
+// a cross-braced tower on a 3-point base must stand; on a LINE base it must
+// fall laterally — the lateral instability the controller will have to solve
+func test_lateral_stability() {
+	// 3-point base (tripod): stable
+	w := world3_new()
+	t0 := 0
+	t0, w = w3_add_pt(w, 0.16, 0.0, 0.0, 1.0)
+	h1 := 0
+	h1, w = w3_add_pt(w, -0.08, 0.0, -0.06, 1.0)
+	h2 := 0
+	h2, w = w3_add_pt(w, -0.08, 0.0, 0.06, 1.0)
+	u := 0
+	u, w = w3_add_pt(w, 0.0, 1.5, 0.0, 40.0)
+	w = w3_add_bone(w, t0, h1)
+	w = w3_add_bone(w, h1, h2)
+	w = w3_add_bone(w, h2, t0)
+	w = w3_add_bone(w, t0, u)
+	w = w3_add_bone(w, h1, u)
+	w = w3_add_bone(w, h2, u)
+	t := 0
+	while t < 240 {
+		w3_step(w, 0.0166666, 6, 8)
+		t = t + 1
+	}
+	check("tripod tower stands (top y " + str(w.py[u]) + ")", w.py[u] > 1.4)
+
+	// line base (both feet on z=0): must topple sideways when perturbed
+	w2 := world3_new()
+	a0 := 0
+	a0, w2 = w3_add_pt(w2, 0.16, 0.0, 0.0, 1.0)
+	a1 := 0
+	a1, w2 = w3_add_pt(w2, -0.08, 0.0, 0.0, 1.0)
+	u2 := 0
+	u2, w2 = w3_add_pt(w2, 0.0, 1.5, 0.0, 40.0)
+	w2 = w3_add_bone(w2, a0, a1)
+	w2 = w3_add_bone(w2, a0, u2)
+	w2 = w3_add_bone(w2, a1, u2)
+	// small lateral nudge
+	w2.oz[u2] = w2.pz[u2] - 0.05 * 0.0166666 / 6.0
+	t = 0
+	while t < 400 {
+		w3_step(w2, 0.0166666, 6, 8)
+		t = t + 1
+	}
+	check("line-base tower topples laterally (top y " + str(w2.py[u2]) + ")", w2.py[u2] < 1.0)
+}
+
+func main() {
+	println("=== pbd3 physics contract ===")
+	test_momentum_3d()
+	test_friction_cone()
+	test_lateral_stability()
+	println("=== summary ===")
+	println("PASS " + str(g_pass) + "   FAIL " + str(g_fail))
+	if g_fail > 0 {
+		println("THERE WERE FAILURES")
+		exit(1)
+	}
+	println("ALL TESTS PASSED")
+}

@@ -1,0 +1,182 @@
+// machin-walker — src/body3.src
+// The 3D humanoid for lateral balance: a widened pelvis (per-side hip
+// particles), tripod feet (toe + two heels — a real support patch), and
+// FRONTAL-plane motors (hip ab/adduction, ankle inversion) on top of the
+// sagittal set. Same masses and motor-speed calibration as the 2D biped.
+
+type Biped3 struct {
+	w World3
+	hip int
+	hipL int
+	hipR int
+	chest int
+	head int
+	kneeL int
+	ankleL int
+	toeL int
+	heelIL int
+	heelOL int
+	kneeR int
+	ankleR int
+	toeR int
+	heelIR int
+	heelOR int
+	elbowL int
+	handL int
+	elbowR int
+	handR int
+	jSpineS int
+	jSpineF int
+	jHipL int
+	jKneeL int
+	jAnkL int
+	jHipFL int
+	jAnkFL int
+	jHipR int
+	jKneeR int
+	jAnkR int
+	jHipFR int
+	jAnkFR int
+	jShL int
+	jElbL int
+	jShR int
+	jElbR int
+}
+
+func b3_hip_pow() (v) { v = 0.0042 }
+func b3_knee_pow() (v) { v = 0.0048 }
+func b3_ank_pow() (v) { v = 0.0030 }
+func b3_hipf_pow() (v) { v = 0.0035 }
+func b3_ankf_pow() (v) { v = 0.0025 }
+
+// one leg hanging from hip particle hx at lateral offset z
+func biped3_leg(w, hx, chest, z) (knee, ankle, toe, heelI, heelO, jHip, jKnee, jAnk, jHipF, jAnkF, w2) {
+	w2 = w
+	knee, w2 = w3_add_pt(w2, 0.0, 0.52, z, 7.0)
+	ankle, w2 = w3_add_pt(w2, 0.0, 0.08, z, 3.0)
+	toe, w2 = w3_add_pt(w2, 0.16, 0.0, z, 0.5)
+	zin := z * 0.6
+	zout := z * 1.5
+	heelI, w2 = w3_add_pt(w2, -0.08, 0.0, zin, 0.45)
+	heelO, w2 = w3_add_pt(w2, -0.08, 0.0, zout, 0.45)
+	w2 = w3_add_bone(w2, hx, knee)
+	w2 = w3_add_bone(w2, knee, ankle)
+	w2 = w3_add_bone(w2, ankle, toe)
+	w2 = w3_add_bone(w2, ankle, heelI)
+	w2 = w3_add_bone(w2, ankle, heelO)
+	w2 = w3_add_bone(w2, toe, heelI)
+	w2 = w3_add_bone(w2, toe, heelO)
+	w2 = w3_add_bone(w2, heelI, heelO)
+	// sagittal set (human knee: flexion negative)
+	jHip, w2 = w3_add_joint(w2, chest, hx, knee, 0, 0.9, b3_hip_pow(), -1.2, 1.6)
+	jKnee, w2 = w3_add_joint(w2, hx, knee, ankle, 0, 0.9, b3_knee_pow(), -2.4, 0.0)
+	jAnk, w2 = w3_add_joint(w2, knee, ankle, toe, 0, 0.9, b3_ank_pow(), -0.9, 0.9)
+	// frontal set: hip ab/adduction + ankle inversion
+	jHipF, w2 = w3_add_joint(w2, chest, hx, knee, 1, 0.9, b3_hipf_pow(), -0.45, 0.45)
+	jAnkF, w2 = w3_add_joint(w2, knee, ankle, heelO, 1, 0.9, b3_ankf_pow(), -0.35, 0.35)
+}
+
+func biped3_arm(w, chest, hip, z) (elbow, hand, jSh, jElb, w2) {
+	w2 = w
+	elbow, w2 = w3_add_pt(w2, 0.0, 1.15, z, 2.0)
+	hand, w2 = w3_add_pt(w2, 0.0, 0.88, z, 1.2)
+	w2 = w3_add_bone(w2, chest, elbow)
+	w2 = w3_add_bone(w2, elbow, hand)
+	jSh, w2 = w3_add_joint(w2, hip, chest, elbow, 0, 0.5, 0.004, -1.4, 1.4)
+	jElb, w2 = w3_add_joint(w2, chest, elbow, hand, 0, 0.5, 0.004, -0.2, 2.0)
+}
+
+func biped3_new() (b) {
+	b = Biped3{}
+	w := world3_new()
+	i0, wa := w3_add_pt(w, 0.0, 0.96, 0.0, 16.0)
+	b.hip = i0
+	i1, wb := w3_add_pt(wa, 0.0, 0.93, -0.09, 4.0)
+	b.hipL = i1
+	i2, wc := w3_add_pt(wb, 0.0, 0.93, 0.09, 4.0)
+	b.hipR = i2
+	i3, wd := w3_add_pt(wc, 0.0, 1.45, 0.0, 16.0)
+	b.chest = i3
+	i4, we := w3_add_pt(wd, 0.0, 1.68, 0.0, 5.0)
+	b.head = i4
+	w = we
+	// pelvis triangle + torso column + anti-twist braces to the chest
+	w = w3_add_bone(w, b.hip, b.hipL)
+	w = w3_add_bone(w, b.hip, b.hipR)
+	w = w3_add_bone(w, b.hipL, b.hipR)
+	w = w3_add_bone(w, b.hip, b.chest)
+	w = w3_add_bone(w, b.hipL, b.chest)
+	w = w3_add_bone(w, b.hipR, b.chest)
+	w = w3_add_bone(w, b.chest, b.head)
+	// passive posture servos, both planes
+	s0, wf := w3_add_joint(w, b.head, b.chest, b.hip, 0, 0.8, 0.0042, -0.5, 0.5)
+	b.jSpineS = s0
+	s1, wg := w3_add_joint(wf, b.head, b.chest, b.hip, 1, 0.8, 0.0042, -0.4, 0.4)
+	b.jSpineF = s1
+	w = wg
+	k1, a1, t1, hi1, ho1, j1, j2, j3, j4, j5, w1 := biped3_leg(w, b.hipL, b.chest, -0.09)
+	b.kneeL = k1
+	b.ankleL = a1
+	b.toeL = t1
+	b.heelIL = hi1
+	b.heelOL = ho1
+	b.jHipL = j1
+	b.jKneeL = j2
+	b.jAnkL = j3
+	b.jHipFL = j4
+	b.jAnkFL = j5
+	k2, a2, t2, hi2, ho2, j6, j7, j8, j9, j10, w2 := biped3_leg(w1, b.hipR, b.chest, 0.09)
+	b.kneeR = k2
+	b.ankleR = a2
+	b.toeR = t2
+	b.heelIR = hi2
+	b.heelOR = ho2
+	b.jHipR = j6
+	b.jKneeR = j7
+	b.jAnkR = j8
+	b.jHipFR = j9
+	b.jAnkFR = j10
+	e1, hd1, sh1, el1, w3v := biped3_arm(w2, b.chest, b.hip, -0.22)
+	b.elbowL = e1
+	b.handL = hd1
+	b.jShL = sh1
+	b.jElbL = el1
+	e2, hd2, sh2, el2, w4v := biped3_arm(w3v, b.chest, b.hip, 0.22)
+	b.elbowR = e2
+	b.handR = hd2
+	b.jShR = sh2
+	b.jElbR = el2
+	b.w = w4v
+}
+
+func biped3_step(b, dt) {
+	w3_step(b.w, dt, 6, 8)
+}
+
+// ── sensors ──
+
+func biped3_pitch(b) (p) {
+	dx := b.w.px[b.chest] - b.w.px[b.hip]
+	dy := b.w.py[b.chest] - b.w.py[b.hip]
+	p = atan2(dx, dy)
+}
+
+// lateral lean of the torso (radians, + = leaning toward +z / right)
+func biped3_roll(b) (r) {
+	dz := b.w.pz[b.chest] - b.w.pz[b.hip]
+	dy := b.w.py[b.chest] - b.w.py[b.hip]
+	r = atan2(dz, dy)
+}
+
+func biped3_fallen(b) (f) {
+	f = false
+	if b.w.py[b.chest] < 0.85 {
+		f = true
+	}
+	if absf3(biped3_pitch(b)) > 1.1 {
+		f = true
+	}
+	if absf3(biped3_roll(b)) > 1.0 {
+		f = true
+	}
+}

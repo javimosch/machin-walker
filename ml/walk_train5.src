@@ -10,16 +10,15 @@
 //   3. assist-free gated rounds (fresh seeds; exit only when the RELOADED
 //      artifact walks >=10m, zero falls, <8% flight on 5 never-used seeds)
 
+// 3-LEVEL fitness: episodes at the round's assist, a third of it, and ZERO,
+// averaged. Rounds 6-7 of the min-at-own-level variant proved policies ride
+// the exact stability edge their assist provides (11+ at 0.03, ~0 at 0.0);
+// blending in the assist-free episode makes self-balance pay from gen 1.
 func h_fitness(n, maxTicks, base, assist) (f) {
-	f = 1000000.0
-	k := 0
-	while k < 3 {
-		s := walk_ep_score(walk_episode_h(n, maxTicks, base + k * 17, assist), maxTicks)
-		if s < f {
-			f = s
-		}
-		k = k + 1
-	}
+	s1 := walk_ep_score(walk_episode_h(n, maxTicks, base, assist), maxTicks)
+	s2 := walk_ep_score(walk_episode_h(n, maxTicks, base + 17, assist / 3.0), maxTicks)
+	s3 := walk_ep_score(walk_episode_h(n, maxTicks, base + 34, 0.0), maxTicks)
+	f = (s1 + s2 + 2.0 * s3) / 4.0
 }
 
 func gate_eval5(n, maxTicks) (minDist, falls, maxFlight) {
@@ -42,6 +41,16 @@ func gate_eval5(n, maxTicks) (minDist, falls, maxFlight) {
 
 func main() {
 	maxTicks := 1200
+
+	// resume support: if a harness champion exists, warm-start from it and
+	// skip the CPG+clone bootstrap
+	prev := net_load("ml/models/walker_h.json")
+	if prev.tinybrain == 1 && prev.topology[0] == 13 {
+		println("{\"resume_from\":\"ml/models/walker_h.json\"}")
+		flush()
+		walk_curriculum(prev, maxTicks)
+		return
+	}
 
 	// ── 1. movement prior ──
 	tb_seed(42)
@@ -78,7 +87,10 @@ func main() {
 	loss := net_train_sgd(n, ds, 200, 0.02)
 	println("{\"phase\":\"clone\",\"mse\":" + tb_fmt(loss) + "}")
 	flush()
+	walk_curriculum(n, maxTicks)
+}
 
+func walk_curriculum(n, maxTicks) {
 	// ── 2. harness rounds, assist annealing to zero ──
 	// finer anneal near zero — the 0.05 -> 0 cliff is where self-balance must
 	// take over; give the hard end more budget and smaller mutations

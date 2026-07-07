@@ -1,0 +1,317 @@
+// machin-walker — src/pbd3.src
+// The 3D generalization of the pbd core, for LATERAL BALANCE (backlog M2).
+// Same enforced physics contract as 2D: inverse-mass constraints, internal
+// torque-limited joint motors (momentum-conserving by construction), Coulomb
+// friction (now a true 2D tangential cone on the ground plane), substepped.
+//
+// Joint motors are PLANAR HINGES: each joint acts in the world sagittal (x,y)
+// or frontal (z,y) plane — the gradient-based angular projection from 2D
+// applied to that coordinate pair. This assumes the walker keeps facing +x
+// (yaw is unactuated; pelvis/shoulder bracing resists twist) — disclosed, and
+// good enough for learning lateral balance before full free-orientation
+// joints.
+
+type World3 struct {
+	px []float
+	py []float
+	pz []float
+	ox []float
+	oy []float
+	oz []float
+	w []float
+	cbones []int
+	brest []float
+	cjoints []int
+	jplane []int
+	joff []float
+	jtarget []float
+	jstiff []float
+	jmaxcorr []float
+	jlo []float
+	jhi []float
+	contact []int
+}
+
+func w3_gravity() (v) { v = -9.81 }
+func w3_mu() (v) { v = 0.9 }
+
+func world3_new() (w) {
+	w = World3{}
+}
+
+func w3_add_pt(w, x, y, z, mass) (i, w2) {
+	w2 = w
+	i = len(w2.px)
+	w2.px = append(w2.px, x)
+	w2.py = append(w2.py, y)
+	w2.pz = append(w2.pz, z)
+	w2.ox = append(w2.ox, x)
+	w2.oy = append(w2.oy, y)
+	w2.oz = append(w2.oz, z)
+	im := 0.0
+	if mass > 0.0 {
+		im = 1.0 / mass
+	}
+	w2.w = append(w2.w, im)
+	w2.contact = append(w2.contact, 0)
+}
+
+func w3_add_bone(w, a, b) (w2) {
+	w2 = w
+	dx := w2.px[b] - w2.px[a]
+	dy := w2.py[b] - w2.py[a]
+	dz := w2.pz[b] - w2.pz[a]
+	w2.cbones = append(w2.cbones, a)
+	w2.cbones = append(w2.cbones, b)
+	w2.brest = append(w2.brest, sqrt(dx * dx + dy * dy + dz * dz))
+}
+
+// planar hinge at b between (b->a) and (b->c); plane 0 = sagittal (x,y),
+// plane 1 = frontal (z,y). Angle relative to the creation pose.
+func w3_add_joint(w, a, b, c, plane, stiff, maxcorr, lo, hi) (ji, w2) {
+	w2 = w
+	ji = len(w2.jtarget)
+	w2.cjoints = append(w2.cjoints, a)
+	w2.cjoints = append(w2.cjoints, b)
+	w2.cjoints = append(w2.cjoints, c)
+	w2.jplane = append(w2.jplane, plane)
+	w2.joff = append(w2.joff, w3_joint_angle_raw(w2, ji))
+	w2.jtarget = append(w2.jtarget, 0.0)
+	w2.jstiff = append(w2.jstiff, stiff)
+	w2.jmaxcorr = append(w2.jmaxcorr, maxcorr)
+	w2.jlo = append(w2.jlo, lo)
+	w2.jhi = append(w2.jhi, hi)
+}
+
+func wrap_pi3(a) (o) {
+	o = a
+	while o > pi() {
+		o = o - 2.0 * pi()
+	}
+	while o < -pi() {
+		o = o + 2.0 * pi()
+	}
+}
+
+// the in-plane coordinate pair of particle i for a joint's plane
+func w3_u(w, i, plane) (u) {
+	u = w.px[i]
+	if plane == 1 {
+		u = w.pz[i]
+	}
+}
+
+func w3_joint_angle_raw(w, ji) (th) {
+	a := w.cjoints[ji * 3]
+	b := w.cjoints[ji * 3 + 1]
+	c := w.cjoints[ji * 3 + 2]
+	pl := w.jplane[ji]
+	v1u := w3_u(w, a, pl) - w3_u(w, b, pl)
+	v1y := w.py[a] - w.py[b]
+	v2u := w3_u(w, c, pl) - w3_u(w, b, pl)
+	v2y := w.py[c] - w.py[b]
+	th = wrap_pi3(atan2(v2y, v2u) - atan2(v1y, v1u))
+}
+
+func w3_joint_angle(w, ji) (th) {
+	th = wrap_pi3(w3_joint_angle_raw(w, ji) - w.joff[ji])
+}
+
+func w3_set_joint_target(w, ji, t) {
+	lo := w.jlo[ji]
+	hi := w.jhi[ji]
+	if t < lo {
+		t = lo
+	}
+	if t > hi {
+		t = hi
+	}
+	w.jtarget[ji] = t
+}
+
+func w3_satisfy_bone(w, k) {
+	a := w.cbones[k * 2]
+	b := w.cbones[k * 2 + 1]
+	dx := w.px[b] - w.px[a]
+	dy := w.py[b] - w.py[a]
+	dz := w.pz[b] - w.pz[a]
+	d := sqrt(dx * dx + dy * dy + dz * dz)
+	if d < 0.000001 {
+		return
+	}
+	wsum := w.w[a] + w.w[b]
+	if wsum < 0.000000001 {
+		return
+	}
+	diff := (d - w.brest[k]) / d / wsum
+	w.px[a] = w.px[a] + dx * diff * w.w[a]
+	w.py[a] = w.py[a] + dy * diff * w.w[a]
+	w.pz[a] = w.pz[a] + dz * diff * w.w[a]
+	w.px[b] = w.px[b] - dx * diff * w.w[b]
+	w.py[b] = w.py[b] - dy * diff * w.w[b]
+	w.pz[b] = w.pz[b] - dz * diff * w.w[b]
+}
+
+func absf3(x) (o) {
+	o = x
+	if o < 0.0 {
+		o = 0.0 - o
+	}
+}
+
+// planar angular-constraint projection (same math as 2D, in the joint's
+// plane): grad_b = -(grad_a+grad_c) => momentum-conserving by construction.
+// Out-of-plane coordinates are untouched.
+func w3_satisfy_joint(w, ji) {
+	th := w3_joint_angle(w, ji)
+	t := w.jtarget[ji]
+	if th < w.jlo[ji] {
+		t = w.jlo[ji]
+	}
+	if th > w.jhi[ji] {
+		t = w.jhi[ji]
+	}
+	err := wrap_pi3(t - th) * w.jstiff[ji]
+	mc := w.jmaxcorr[ji]
+	if err > mc {
+		err = mc
+	}
+	if err < -mc {
+		err = -mc
+	}
+	if absf3(err) < 0.0000001 {
+		return
+	}
+	a := w.cjoints[ji * 3]
+	b := w.cjoints[ji * 3 + 1]
+	c := w.cjoints[ji * 3 + 2]
+	pl := w.jplane[ji]
+	rau := w3_u(w, a, pl) - w3_u(w, b, pl)
+	ray := w.py[a] - w.py[b]
+	rcu := w3_u(w, c, pl) - w3_u(w, b, pl)
+	rcy := w.py[c] - w.py[b]
+	la2 := rau * rau + ray * ray
+	lc2 := rcu * rcu + rcy * rcy
+	if la2 < 0.000000001 || lc2 < 0.000000001 {
+		return
+	}
+	gau := ray / la2
+	gay := 0.0 - rau / la2
+	gcu := 0.0 - rcy / lc2
+	gcy := rcu / lc2
+	gbu := 0.0 - gau - gcu
+	gby := 0.0 - gay - gcy
+	wa := w.w[a]
+	wb := w.w[b]
+	wc := w.w[c]
+	denom := wa * (gau * gau + gay * gay) + wb * (gbu * gbu + gby * gby) + wc * (gcu * gcu + gcy * gcy)
+	if denom < 0.000000001 {
+		return
+	}
+	lam := err / denom
+	if pl == 0 {
+		w.px[a] = w.px[a] + lam * wa * gau
+		w.px[b] = w.px[b] + lam * wb * gbu
+		w.px[c] = w.px[c] + lam * wc * gcu
+	} else {
+		w.pz[a] = w.pz[a] + lam * wa * gau
+		w.pz[b] = w.pz[b] + lam * wb * gbu
+		w.pz[c] = w.pz[c] + lam * wc * gcu
+	}
+	w.py[a] = w.py[a] + lam * wa * gay
+	w.py[b] = w.py[b] + lam * wb * gby
+	w.py[c] = w.py[c] + lam * wc * gcy
+}
+
+// ground y=0: non-penetration + a true tangential friction CONE (x,z)
+func w3_ground(w, sx, sz) {
+	i := 0
+	while i < len(w.px) {
+		if w.py[i] < 0.0 {
+			pen := 0.0 - w.py[i]
+			w.py[i] = 0.0
+			tdx := w.px[i] - sx[i]
+			tdz := w.pz[i] - sz[i]
+			tl := sqrt(tdx * tdx + tdz * tdz)
+			lim := w3_mu() * pen
+			if tl <= lim {
+				w.px[i] = sx[i]
+				w.pz[i] = sz[i]
+			} else {
+				sc := lim / tl
+				w.px[i] = w.px[i] - tdx * sc
+				w.pz[i] = w.pz[i] - tdz * sc
+			}
+			w.contact[i] = 1
+		}
+		i = i + 1
+	}
+}
+
+func w3_step(w, dt, substeps, iters) {
+	sdt := dt / float(substeps)
+	s := 0
+	while s < substeps {
+		i := 0
+		while i < len(w.px) {
+			w.contact[i] = 0
+			i = i + 1
+		}
+		sx := []float{}
+		sz := []float{}
+		i = 0
+		while i < len(w.px) {
+			sx = append(sx, w.px[i])
+			sz = append(sz, w.pz[i])
+			if w.w[i] > 0.0 {
+				vx := w.px[i] - w.ox[i]
+				vy := w.py[i] - w.oy[i]
+				vz := w.pz[i] - w.oz[i]
+				w.ox[i] = w.px[i]
+				w.oy[i] = w.py[i]
+				w.oz[i] = w.pz[i]
+				w.px[i] = w.px[i] + vx
+				w.py[i] = w.py[i] + vy + w3_gravity() * sdt * sdt
+				w.pz[i] = w.pz[i] + vz
+			}
+			i = i + 1
+		}
+		it := 0
+		while it < iters {
+			j := 0
+			while j < len(w.jtarget) {
+				w3_satisfy_joint(w, j)
+				j = j + 1
+			}
+			k := 0
+			while k < len(w.brest) {
+				w3_satisfy_bone(w, k)
+				k = k + 1
+			}
+			w3_ground(w, sx, sz)
+			it = it + 1
+		}
+		s = s + 1
+	}
+}
+
+func w3_com(w) (cx, cy, cz) {
+	m := 0.0
+	sxm := 0.0
+	sym := 0.0
+	szm := 0.0
+	i := 0
+	while i < len(w.px) {
+		if w.w[i] > 0.0 {
+			mi := 1.0 / w.w[i]
+			m = m + mi
+			sxm = sxm + w.px[i] * mi
+			sym = sym + w.py[i] * mi
+			szm = szm + w.pz[i] * mi
+		}
+		i = i + 1
+	}
+	cx = sxm / m
+	cy = sym / m
+	cz = szm / m
+}
