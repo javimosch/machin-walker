@@ -158,6 +158,24 @@ func biped_vx(b, dt) (v) {
 	v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0)
 }
 
+// vertical hip velocity (m/s)
+func biped_vy(b, dt) (v) {
+	v = (b.w.py[b.hip] - b.w.oy[b.hip]) / (dt / 6.0)
+}
+
+// torso pitch RATE (rad/s) — the damping channel. Same lesson as the arm
+// reacher: without a derivative input, posture control limit-cycles.
+func biped_pitch_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	cvx := (b.w.px[b.chest] - b.w.ox[b.chest]) / sdt
+	hvx := (b.w.px[b.hip] - b.w.ox[b.hip]) / sdt
+	sl := b.w.py[b.chest] - b.w.py[b.hip]
+	if sl < 0.1 {
+		sl = 0.1
+	}
+	r = (cvx - hvx) / sl
+}
+
 func biped_contact_l(b) (c) {
 	c = 0
 	if b.w.contact[b.toeL] == 1 || b.w.contact[b.heelL] == 1 {

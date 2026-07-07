@@ -20,7 +20,7 @@ func walk_noise(seed, t, i) (v) {
 	v = (x - floor(x)) * 2.0 - 1.0
 }
 
-// per-leg controller inputs (11). `nz` adds +-1% sensor noise: policies
+// per-leg controller inputs (13). `nz` adds +-1% sensor noise: policies
 // trained WITH noise are robust — the first noise-free champion walked 10.4m
 // in training but 6.7m after artifact save/load, because contact dynamics
 // are chaotic and it had overfit to exact weight bits.
@@ -29,8 +29,10 @@ func walk_inputs(b, ph, jHipT, jKneeT, jAnkT, jHipO, cT, cO, nz, nseed, nt) (x) 
 	x = append(x, sin(ph))
 	x = append(x, sin(ph + pi() / 2.0))
 	x = append(x, biped_pitch(b))
+	x = append(x, biped_pitch_rate(b, walk_dt()) / 3.0)
 	x = append(x, (biped_hip_h(b) - 0.96) * 4.0)
 	x = append(x, biped_vx(b, walk_dt()) / 2.0)
+	x = append(x, biped_vy(b, walk_dt()) / 1.5)
 	x = append(x, w_joint_angle(b.w, jHipT))
 	x = append(x, w_joint_angle(b.w, jKneeT))
 	x = append(x, w_joint_angle(b.w, jAnkT))

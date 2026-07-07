@@ -48,7 +48,7 @@ func main() {
 	p, ps := cpg_search(1200, 800, maxTicks)
 	println("{\"phase\":\"cpg\",\"score\":" + tb_fmt(ps) + ",\"params\":" + tb_vec_json(p) + "}")
 	flush()
-	n := net_new([]int{11, 14, 3}, []string{"tanh", "tanh"}, 42)
+	n := net_new([]int{13, 16, 3}, []string{"tanh", "tanh"}, 42)
 	ds := Dataset{}
 	i := 0
 	while i < 4000 {
@@ -57,8 +57,10 @@ func main() {
 		x = append(x, sin(ph))
 		x = append(x, sin(ph + pi() / 2.0))
 		x = append(x, tb_randf_range(-0.4, 0.4))
+		x = append(x, tb_randf_range(-0.8, 0.8))
 		x = append(x, tb_randf_range(-0.6, 0.3))
 		x = append(x, tb_randf_range(-0.3, 0.8))
+		x = append(x, tb_randf_range(-0.6, 0.6))
 		x = append(x, tb_randf_range(-1.0, 1.2))
 		x = append(x, tb_randf_range(-1.8, 0.0))
 		x = append(x, tb_randf_range(-0.7, 0.7))
@@ -78,7 +80,9 @@ func main() {
 	flush()
 
 	// ── 2. harness rounds, assist annealing to zero ──
-	assists := []float{0.8, 0.55, 0.38, 0.26, 0.18, 0.12, 0.08, 0.05, 0.03, 0.0}
+	// finer anneal near zero — the 0.05 -> 0 cliff is where self-balance must
+	// take over; give the hard end more budget and smaller mutations
+	assists := []float{0.8, 0.5, 0.32, 0.2, 0.13, 0.08, 0.05, 0.03, 0.018, 0.01, 0.005, 0.0}
 	r := 0
 	while r < len(assists) {
 		a := assists[r]
@@ -92,6 +96,10 @@ func main() {
 		cfg.elite = 8
 		cfg.mut_rate = 0.12
 		cfg.mut_sigma = 0.15
+		if a < 0.1 {
+			cfg.generations = 250
+			cfg.mut_sigma = 0.08
+		}
 		cfg.warm_start = true
 		cfg.workers = 6
 		cfg.target_fitness = 11.0
