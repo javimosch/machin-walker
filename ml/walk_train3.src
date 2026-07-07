@@ -1,0 +1,59 @@
+// ml/walk_train3.src — robustness fine-tune. The train2 champion walks 22m on
+// its two TRAINING noise seeds and falls in 2s on any other: with a fixed
+// deterministic noise sequence, evolution co-adapts to the noise instead of
+// resisting it. Antidote: score the WORST of five seeds — min-of-N was too
+// pessimistic from scratch, but warm-started from an already-walking policy
+// it selects exactly what we want: a gait that works under ANY perturbation.
+
+func walk_fitness_robust(n, maxTicks) (f) {
+	seeds := []int{101, 202, 333, 444, 555}
+	f = 1000000.0
+	for _, sd := range seeds {
+		s := walk_ep_score(walk_episode(n, maxTicks, sd), maxTicks)
+		if s < f {
+			f = s
+		}
+	}
+}
+
+func main() {
+	maxTicks := 1200
+	n := net_load("ml/models/walker.json")
+	println("{\"warm_start_from\":\"ml/models/walker.json\",\"robust_fitness_now\":" + tb_fmt(walk_fitness_robust(n, maxTicks)) + "}")
+	flush()
+	fit := func(nn) {
+		return walk_fitness_robust(nn, maxTicks)
+	}
+	cfg := evolve_cfg_default()
+	cfg.pop = 128
+	cfg.generations = 1500
+	cfg.elite = 8
+	cfg.mut_rate = 0.12
+	cfg.mut_sigma = 0.12
+	cfg.warm_start = true
+	cfg.workers = 12
+	cfg.target_fitness = 11.0   // worst seed >= 10m and standing
+	cfg.log_path = "ml/models/walk_train.jsonl"
+	cfg.print_every = 10
+	t0 := now_ms()
+	res, champ := evolve_run(n, fit, cfg)
+	ms := now_ms() - t0
+	net_save(champ, "ml/models/walker_robust.json")
+	// verify on seeds NEVER used in training
+	worst := 1000000.0
+	best := -1000000.0
+	fell := 0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := walk_episode(champ, maxTicks, sd)
+		if ep.dist < worst {
+			worst = ep.dist
+		}
+		if ep.dist > best {
+			best = ep.dist
+		}
+		if ep.fell {
+			fell = fell + 1
+		}
+	}
+	println("{\"artifact\":\"ml/models/walker_robust.json\",\"train_ms\":" + str(ms) + ",\"generations\":" + str(res.generations) + ",\"best_fitness\":" + tb_fmt(res.best_fitness) + ",\"heldout_5_seeds\":{\"min_dist\":" + tb_fmt(worst) + ",\"max_dist\":" + tb_fmt(best) + ",\"falls\":" + str(fell) + "}}")
+}
