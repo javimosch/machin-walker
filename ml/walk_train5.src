@@ -10,14 +10,44 @@
 //   3. assist-free gated rounds (fresh seeds; exit only when the RELOADED
 //      artifact walks >=10m, zero falls, <8% flight on 5 never-used seeds)
 
-// 3-LEVEL fitness: episodes at the round's assist, a third of it, and ZERO,
-// averaged. Rounds 6-7 of the min-at-own-level variant proved policies ride
-// the exact stability edge their assist provides (11+ at 0.03, ~0 at 0.0);
-// blending in the assist-free episode makes self-balance pay from gen 1.
+// STRICT training score: flight above 4% of ticks pays like a fall — half
+// the 8% gate cap, so passing training implies margin at the gate (the
+// step-timing policy previously tuned itself to 7.9% on seen seeds and
+// exploded to 50% on unseen ones)
+func h_score(n, maxTicks, seed, assist) (f) {
+	ep := walk_episode_h(n, maxTicks, seed, assist)
+	f = walk_ep_score(ep, maxTicks)
+	if float(ep.flight) > 0.04 * float(maxTicks) {
+		f = 0.25 * ep.dist
+	}
+}
+
+// blended fitness while assisted; WORST-OF-4 fresh seeds once assist-free
+// (mean lets one memorized seed carry the score)
 func h_fitness(n, maxTicks, base, assist) (f) {
-	s1 := walk_ep_score(walk_episode_h(n, maxTicks, base, assist), maxTicks)
-	s2 := walk_ep_score(walk_episode_h(n, maxTicks, base + 17, assist / 3.0), maxTicks)
-	s3 := walk_ep_score(walk_episode_h(n, maxTicks, base + 34, 0.0), maxTicks)
+	if assist <= 0.0 {
+		f = h_score(n, maxTicks, base, 0.0)
+		s := h_score(n, maxTicks, base + 17, 0.0)
+		if s < f {
+			f = s
+		}
+		s = h_score(n, maxTicks, base + 34, 0.0)
+		if s < f {
+			f = s
+		}
+		s = h_score(n, maxTicks, base + 51, 0.0)
+		if s < f {
+			f = s
+		}
+		return
+	}
+	s1 := h_score(n, maxTicks, base, assist)
+	s2 := h_score(n, maxTicks, base + 17, assist / 3.0)
+	s3 := h_score(n, maxTicks, base + 34, 0.0)
+	s4 := h_score(n, maxTicks, base + 51, 0.0)
+	if s4 < s3 {
+		s3 = s4
+	}
 	f = (s1 + s2 + 2.0 * s3) / 4.0
 }
 
@@ -42,8 +72,15 @@ func gate_eval5(n, maxTicks) (minDist, falls, maxFlight) {
 func main() {
 	maxTicks := 1500
 
-	// resume support: if a harness champion exists, warm-start from it and
-	// skip the CPG+clone bootstrap
+	// resume tiers: a gate-stage champion jumps straight to gate rounds; a
+	// harness champion re-runs the curriculum; else bootstrap from CPG+clone
+	prevG := net_load("ml/models/walker_robust.json")
+	if prevG.tinybrain == 1 && prevG.topology[0] == 13 && prevG.topology[2] == 4 {
+		println("{\"resume_from\":\"ml/models/walker_robust.json (gate rounds)\"}")
+		flush()
+		walk_gate_rounds(prevG, maxTicks)
+		return
+	}
 	prev := net_load("ml/models/walker_h.json")
 	if prev.tinybrain == 1 && prev.topology[0] == 13 && prev.topology[2] == 4 {
 		println("{\"resume_from\":\"ml/models/walker_h.json\"}")
@@ -126,19 +163,23 @@ func walk_curriculum(n, maxTicks) {
 		r = r + 1
 	}
 
+	walk_gate_rounds(n, maxTicks)
+}
+
+func walk_gate_rounds(n, maxTicks) {
 	// ── 3. assist-free gated rounds ──
 	round := 0
-	while round < 12 {
+	while round < 24 {
 		base := 50000 + round * 1000
 		fit := func(nn) {
 			return h_fitness(nn, maxTicks, base, 0.0)
 		}
 		cfg := evolve_cfg_default()
 		cfg.pop = 96
-		cfg.generations = 150
+		cfg.generations = 250
 		cfg.elite = 8
 		cfg.mut_rate = 0.12
-		cfg.mut_sigma = 0.10
+		cfg.mut_sigma = 0.06
 		cfg.warm_start = true
 		cfg.workers = 6
 		cfg.target_fitness = 12.0
