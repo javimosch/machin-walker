@@ -147,6 +147,7 @@ func walk3_curriculum(n, maxTicks) {
 	r := 0
 	attempt := 0
 	seedTick := 0
+	totalRounds := 0
 	while r < len(assists) {
 		a := assists[r]
 		base := 3000 + seedTick * 500
@@ -175,24 +176,42 @@ func walk3_curriculum(n, maxTicks) {
 		gensRan := 0
 		arena {
 			res, champ := evolve_run(n, fit, cfg)
-			net_save(champ, "ml/models/walker3_h.json")
+			net_save(champ, "ml/models/walker3_try.json")
 			bestF = res.best_fitness
 			gensRan = res.generations
 		}
-		n = net_load("ml/models/walker3_h.json")
+		n = net_load("ml/models/walker3_try.json")
 		dep := walk3_episode_h(n, maxTicks, base + 99, a)
 		println("{\"harness3_level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(bestF) + ",\"gens\":" + str(gensRan) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"maxyaw_deg\":" + tb_fmt(dep.maxyaw * 57.3) + ",\"fell\":" + str(dep.fell) + "}}")
 		flush()
 		seedTick = seedTick + 1
+		totalRounds = totalRounds + 1
+		if totalRounds > 60 {
+			println("{\"curriculum\":\"budget exhausted\"}")
+			flush()
+			break
+		}
 		// mastery = the fresh-seed DIAGNOSTIC at this assist level (no fall,
-		// covers 8m+). The blended train fitness is dominated by zero-assist
-		// episodes and cannot pass any bar early — a champion walked 12.5m
-		// clean under harness while the blend read 3.9.
-		if (dep.fell == false && dep.dist >= 8.0) || attempt >= 3 {
+		// covers 8m+). Champions are CHECKPOINTED ONLY ON MASTERY — saving
+		// every attempt once let a collapsed net poison the resume. On
+		// exhaustion, go UP a level to re-consolidate rather than descending
+		// into failure (bidirectional curriculum).
+		if dep.fell == false && dep.dist >= 8.0 {
+			net_save(n, "ml/models/walker3_h.json")
 			r = r + 1
 			attempt = 0
 		} else {
 			attempt = attempt + 1
+			if attempt > 5 {
+				attempt = 0
+				prev := net_load("ml/models/walker3_h.json")
+				if prev.tinybrain == 1 {
+					n = prev
+				}
+				if r > 0 {
+					r = r - 1
+				}
+			}
 		}
 	}
 
