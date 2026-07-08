@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>machin-walker — full-3D: a tiny neural net balances and runs</title>
+<style>
+  body { margin: 0; background: #14161a; color: #eaeaea; font: 15px/1.5 system-ui, sans-serif;
+         display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 12px; }
+  h1 { font-size: 20px; margin: 0; }
+  p { max-width: 760px; margin: 0; color: #b9bec7; text-align: center; }
+  a { color: #7dc4ff; }
+  canvas { max-width: 100%; height: auto; border-radius: 8px; }
+  #status { color: #8b93a1; font-size: 13px; }
+  .facts { max-width: 760px; color: #8b93a1; font-size: 13px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>machin-walker</h1>
+<p>A <a href="https://github.com/javimosch/tinybrain">tinybrain</a> neural network (13 sensors → 16 → 4,
+one ~4.7&nbsp;KB JSON artifact) drives six torque-limited joints — and its own gait clock — of a
+1.75&nbsp;m / 70&nbsp;kg biped through a rigorous pure-<a href="https://github.com/javimosch/machin">machin</a>
+physics simulation, compiled to WebAssembly. Internal joint torques only — no balance assist, no
+velocity caps, momentum-conserving motors, Coulomb friction. This is the FULL-3D
+biped: lateral balance and heading are simulated, not staged — the depth you see is physics. Zero
+falls on noise seeds never seen in training; a strict low-flight <i>walk</i> remains the open
+milestone. The physics below runs in your browser; JS only draws.</p>
+<canvas id="cv" width="1100" height="700"></canvas>
+<div id="status">loading…</div>
+<p class="facts">Learned by neuroevolution with a curriculum: an open-loop gait prior is SGD-cloned into
+the net, a training harness anneals to zero, learned step-timing (the net modulates its own clock) unlocks
+self-balance, and the gate only accepts the saved artifact covering &ge;10&nbsp;m with zero falls on noise
+seeds never used in training.
+<a href="https://github.com/javimosch/machin-walker">Source &amp; the honest training log</a>.</p>
+<script type="module">
+const status = (m) => document.getElementById('status').textContent = m;
+const cv = document.getElementById('cv'), cx = cv.getContext('2d');
+
+// particle indices (creation order in body3.src)
+const HIP=0, HIPL=1, HIPR=2, CHEST=3, HEAD=4,
+      KNL=5, ANL=6, TOL=7, HILL=8, HOLL=9,
+      KNR=10, ANR=11, TOR=12, HILR=13, HORR=14,
+      ELL=15, HAL=16, ELR=17, HAR=18;
+
+try {
+  const stub = new Proxy({}, { get: () => () => 0 });
+  const [wasmResp, artifact] = await Promise.all([
+    fetch('walker3.wasm'), (await fetch('walker3.json')).text()
+  ]);
+  const { instance } = await WebAssembly.instantiate(await wasmResp.arrayBuffer(),
+    { wasi_snapshot_preview1: stub, env: stub });
+  const ex = instance.exports;
+  ex._initialize?.();
+  const bytes = new TextEncoder().encode(artifact);
+  const p = ex.buf3(BigInt(bytes.length));
+  new Uint8Array(ex.memory.buffer).set(bytes, Number(p));
+  if (ex.boot3(p) !== 1n) throw new Error('artifact rejected');
+
+  // tiny 3D camera: look-at + perspective, matching the native viewer
+  function project(px, py, pz, cam) {
+    const [cxp, cyp, czp] = cam.pos, [tx, ty, tz] = cam.tgt;
+    let fz = [tx-cxp, ty-cyp, tz-czp];
+    const fl = Math.hypot(...fz); fz = fz.map(v => v/fl);
+    let rx = [-fz[2], 0, fz[0]];                      // right = cross(f, up=(0,1,0))
+    const rl = Math.hypot(...rx); rx = rx.map(v => v/rl);
+    const up = [rx[1]*fz[2]-rx[2]*fz[1], rx[2]*fz[0]-rx[0]*fz[2], rx[0]*fz[1]-rx[1]*fz[0]];
+    const d = [px-cxp, py-cyp, pz-czp];
+    const x = d[0]*rx[0]+d[1]*rx[1]+d[2]*rx[2];
+    const y = d[0]*up[0]+d[1]*up[1]+d[2]*up[2];
+    const z = d[0]*fz[0]+d[1]*fz[1]+d[2]*fz[2];
+    const f = 700 / Math.tan(0.48);                   // ~55deg fov
+    return [550 + f*x/z, 350 - f*y/z, z];
+  }
+
+  function limb(a, b, w, color, segs) { segs.push({a, b, w, color, z: (a[2]+b[2])/2}); }
+
+  function draw() {
+    cx.fillStyle = '#14161a'; cx.fillRect(0, 0, 1100, 700);
+    const hx = ex.p3x(BigInt(HIP)), hy = ex.p3y(BigInt(HIP));
+    const cam = { pos: [hx-1.6, 1.7, 3.2], tgt: [hx+0.4, 0.9, 0] };
+    // floor grid + meter marks
+    cx.strokeStyle = '#2a2f3a'; cx.lineWidth = 1;
+    const gx = Math.floor(hx);
+    for (let i = -14; i <= 14; i++) {
+      const a = project(gx+i*0.5, 0, -4, cam), b = project(gx+i*0.5, 0, 4, cam);
+      cx.beginPath(); cx.moveTo(a[0], a[1]); cx.lineTo(b[0], b[1]); cx.stroke();
+    }
+    for (let z = -8; z <= 8; z++) {
+      const a = project(gx-7, 0, z*0.5, cam), b = project(gx+7, 0, z*0.5, cam);
+      cx.beginPath(); cx.moveTo(a[0], a[1]); cx.lineTo(b[0], b[1]); cx.stroke();
+    }
+    cx.fillStyle = '#8a8a50';
+    for (let m = 0; m <= 30; m++) {
+      const a = project(m, 0.01, -1.2, cam);
+      if (a[2] > 0.5) cx.fillRect(a[0]-2, a[1]-2, 4, 4);
+    }
+    // skeleton with painter-ordered thick segments — z comes FROM THE SIM
+    const P = (i) => project(ex.p3x(BigInt(i)), ex.p3y(BigInt(i)), ex.p3z(BigInt(i)), cam);
+    const PA = (i, dz) => project(ex.p3x(BigInt(i)), ex.p3y(BigInt(i)), ex.p3z(BigInt(i)) + dz, cam);
+    const skin='#e1c8aa', shirt='#4682c8', pants='#3c465a', shoe='#282830';
+    const segs = [];
+    limb(P(HIP), P(CHEST), 16, shirt, segs);
+    limb(P(CHEST), P(HEAD), 7, skin, segs);
+    limb(P(HIPL), P(HIPR), 10, pants, segs);
+    limb(P(HIPL), P(KNL), 10, pants, segs);  limb(P(KNL), P(ANL), 8, pants, segs);
+    limb(P(ANL), P(TOL), 6, shoe, segs);     limb(P(ANL), P(HOLL), 6, shoe, segs);
+    limb(P(HIPR), P(KNR), 10, pants, segs);  limb(P(KNR), P(ANR), 8, pants, segs);
+    limb(P(ANR), P(TOR), 6, shoe, segs);     limb(P(ANR), P(HORR), 6, shoe, segs);
+    limb(PA(CHEST,-0.13), P(ELL), 7, shirt, segs); limb(P(ELL), P(HAL), 6, skin, segs);
+    limb(PA(CHEST,0.13), P(ELR), 7, shirt, segs);  limb(P(ELR), P(HAR), 6, skin, segs);
+    segs.sort((a, b) => b.z - a.z);
+    for (const s of segs) {
+      cx.strokeStyle = s.color; cx.lineWidth = s.w; cx.lineCap = 'round';
+      cx.beginPath(); cx.moveTo(s.a[0], s.a[1]); cx.lineTo(s.b[0], s.b[1]); cx.stroke();
+    }
+    const h = P(HEAD);
+    cx.fillStyle = skin; cx.beginPath(); cx.arc(h[0], h[1]-4, 13, 0, 7); cx.fill();
+    // HUD
+    cx.fillStyle = '#78dc82'; cx.font = '20px system-ui';
+    cx.fillText(`distance ${ex.w3_dist().toFixed(2)} m   speed ${ex.w3_speed().toFixed(2)} m/s   drift ${ex.w3_drift().toFixed(2)} m   yaw ${(ex.w3_yaw()*57.3).toFixed(0)}°   t ${ex.w3_t().toFixed(1)} s`, 24, 40);
+    if (ex.w3_fell() === 1n) { cx.fillStyle = '#e66e5a'; cx.fillText('fell — restarting', 24, 68); }
+  }
+
+  let last = performance.now(), acc = 0;
+  function frame(now) {
+    acc = Math.min(acc + (now - last), 200); last = now;
+    while (acc >= 1000/60) { ex.tick3(); acc -= 1000/60; }
+    draw();
+    requestAnimationFrame(frame);
+  }
+  status('the artifact is running — physics in wasm, drawing in JS');
+  requestAnimationFrame(frame);
+} catch (e) { status('failed: ' + e.message); console.error(e); }
+</script>
+</body>
+</html>
