@@ -1,0 +1,156 @@
+// machin-walker — game/walker3_game.src (derived from walker_game.src)
+// The FULL-3D biped viewer: every coordinate incl. depth comes from the sim.
+// Build: ./build3.sh   Run from the repo root: ./walker3-game
+// Self-captures screenshots at fixed frames (walker3_shot_*.png).
+
+extern "raylib" {
+	header "raylib.h"
+	link "raylib" link "GL" link "m" link "pthread" link "dl" link "rt" link "X11"
+	cstruct Color { r u8 g u8 b u8 a u8 }
+	cstruct Vector3 { x f32 y f32 z f32 }
+	cstruct Camera3D { position Vector3 target Vector3 up Vector3 fovy f32 projection i32 }
+	fn InitWindow(i32, i32, string)
+	fn SetTargetFPS(i32)
+	fn WindowShouldClose() bool
+	fn BeginDrawing()
+	fn EndDrawing()
+	fn ClearBackground(Color)
+	fn CloseWindow()
+	fn BeginMode3D(Camera3D)
+	fn EndMode3D()
+	fn DrawGrid(i32, f32)
+	fn DrawCylinderEx(Vector3, Vector3, f32, f32, i32, Color)
+	fn DrawSphere(Vector3, f32, Color)
+	fn DrawCube(Vector3, f32, f32, f32, Color)
+	fn DrawLine3D(Vector3, Vector3, Color)
+	fn DrawText(string, i32, i32, i32, Color)
+	fn TakeScreenshot(string)
+}
+
+// true sim coordinates -> raylib Vector3
+func v3of(b, i) (v) {
+	v = Vector3{b.w.px[i], b.w.py[i], b.w.pz[i]}
+}
+
+func v3ofz(b, i, dz) (v) {
+	v = Vector3{b.w.px[i], b.w.py[i], b.w.pz[i] + dz}
+}
+
+func limb(a, bpt, r1, r2, col) {
+	DrawCylinderEx(a, bpt, r1, r2, 8, col)
+}
+
+func draw_walker(b) {
+	skin := Color{225, 200, 170, 255}
+	shirt := Color{70, 130, 200, 255}
+	pants := Color{60, 70, 90, 255}
+	shoe := Color{40, 40, 45, 255}
+	// torso + pelvis bar + shoulder bar (all true sim positions)
+	limb(v3of(b, b.hip), v3of(b, b.chest), 0.09, 0.11, shirt)
+	limb(v3of(b, b.hipL), v3of(b, b.hipR), 0.07, 0.07, pants)
+	DrawCylinderEx(v3ofz(b, b.chest, -0.22), v3ofz(b, b.chest, 0.22), 0.06, 0.06, 8, shirt)
+	DrawSphere(v3of(b, b.head), 0.11, skin)
+	limb(v3of(b, b.chest), v3of(b, b.head), 0.045, 0.045, skin)
+	// legs
+	limb(v3of(b, b.hipL), v3of(b, b.kneeL), 0.065, 0.05, pants)
+	limb(v3of(b, b.kneeL), v3of(b, b.ankleL), 0.05, 0.035, pants)
+	limb(v3of(b, b.ankleL), v3of(b, b.toeL), 0.035, 0.03, shoe)
+	limb(v3of(b, b.ankleL), v3of(b, b.heelOL), 0.035, 0.03, shoe)
+	limb(v3of(b, b.hipR), v3of(b, b.kneeR), 0.065, 0.05, pants)
+	limb(v3of(b, b.kneeR), v3of(b, b.ankleR), 0.05, 0.035, pants)
+	limb(v3of(b, b.ankleR), v3of(b, b.toeR), 0.035, 0.03, shoe)
+	limb(v3of(b, b.ankleR), v3of(b, b.heelOR), 0.035, 0.03, shoe)
+	// arms
+	limb(v3ofz(b, b.chest, -0.22), v3of(b, b.elbowL), 0.045, 0.04, shirt)
+	limb(v3of(b, b.elbowL), v3of(b, b.handL), 0.04, 0.03, skin)
+	limb(v3ofz(b, b.chest, 0.22), v3of(b, b.elbowR), 0.045, 0.04, shirt)
+	limb(v3of(b, b.elbowR), v3of(b, b.handR), 0.04, 0.03, skin)
+	DrawSphere(v3of(b, b.kneeL), 0.05, pants)
+	DrawSphere(v3of(b, b.kneeR), 0.05, pants)
+}
+
+func fmt2w(v) (s) {
+	neg := false
+	if v < 0.0 {
+		neg = true
+		v = -v
+	}
+	w := int(floor(v * 100.0 + 0.5))
+	frac := str(w % 100)
+	if len(frac) == 1 {
+		frac = "0" + frac
+	}
+	s = str(w / 100) + "." + frac
+	if neg {
+		s = "-" + s
+	}
+}
+
+func main() {
+	src := read_file("ml/models/walker3.json")
+	if len(src) == 0 {
+		println("ml/models/walker3.json missing — run ml/walk3_train.src first")
+		exit(1)
+	}
+	n := net_load("ml/models/walker3.json")
+	b := biped3_new()
+	x0 := b.w.px[b.hip]
+	InitWindow(1100, 700, "machin-walker3 - FULL-3D: lateral balance is simulated")
+	SetTargetFPS(60)
+	hud := Color{235, 235, 235, 255}
+	gph := 0.0
+	t := 0
+	for WindowShouldClose() == false {
+		if biped3_fallen(b) == false {
+			cl := biped3_contact(b, b.toeL, b.heelIL, b.heelOL)
+			cr := biped3_contact(b, b.toeR, b.heelIR, b.heelOR)
+			outL := net_forward(n, walk3_inputs(b, gph, 1.0, b.jHipL, b.jKneeL, b.jAnkL, b.jHipFL, b.jAnkFL, b.jHipR, cl, cr, 0.0, 0, t))
+			outR := net_forward(n, walk3_inputs(b, gph + pi(), -1.0, b.jHipR, b.jKneeR, b.jAnkR, b.jHipFR, b.jAnkFR, b.jHipL, cr, cl, 0.0, 0, t))
+			walk3_apply(b, outL, 1.0, b.jHipL, b.jKneeL, b.jAnkL, b.jHipFL, b.jAnkFL)
+			walk3_apply(b, outR, -1.0, b.jHipR, b.jKneeR, b.jAnkR, b.jHipFR, b.jAnkFR)
+			rr := 1.0 + 0.125 * (outL[5] + outR[5])
+			if rr < 0.8 { rr = 0.8 }
+			if rr > 1.3 { rr = 1.3 }
+			gph = gph + 2.0 * pi() * walk3_hz() * walk3_dt() * rr
+			walk3_arm_swing(b)
+			biped3_step(b, walk3_dt())
+			t = t + 1
+		}
+		hx := b.w.px[b.hip]
+		BeginDrawing()
+		ClearBackground(Color{20, 24, 30, 255})
+		cam := Camera3D{Vector3{hx - 1.6, 1.7, 3.2}, Vector3{hx + 0.4, 0.9, 0.0}, Vector3{0.0, 1.0, 0.0}, 55.0, 0}
+		BeginMode3D(cam)
+		// floor grid that follows the walker (DrawGrid is origin-centered)
+		gx := floor(hx)
+		gi := -14
+		while gi <= 14 {
+			DrawLine3D(Vector3{gx + float(gi) * 0.5, 0.0, -4.0}, Vector3{gx + float(gi) * 0.5, 0.0, 4.0}, Color{55, 62, 74, 255})
+			gi = gi + 1
+		}
+		gz := -8
+		while gz <= 8 {
+			DrawLine3D(Vector3{gx - 7.0, 0.0, float(gz) * 0.5}, Vector3{gx + 7.0, 0.0, float(gz) * 0.5}, Color{55, 62, 74, 255})
+			gz = gz + 1
+		}
+		// meter marks along the path
+		m := 0
+		while m <= 14 {
+			DrawCube(Vector3{float(m), 0.01, -1.2}, 0.04, 0.02, 0.4, Color{160, 160, 90, 255})
+			m = m + 1
+		}
+		draw_walker(b)
+		EndMode3D()
+		dist := hx - x0
+		DrawText("machin-walker3: a 20-sensor tinybrain net drives 10 joints + its own gait clock - FULL 3D", 20, 16, 18, hud)
+		DrawText("distance " + fmt2w(dist) + " m   speed " + fmt2w(biped3_vx(b, walk3_dt())) + " m/s   drift " + fmt2w(b.w.pz[b.hip]) + " m   yaw " + fmt2w(biped3_yaw(b) * 57.3) + "   t " + fmt2w(float(t) * walk3_dt()) + " s", 20, 44, 22, Color{120, 220, 130, 255})
+		if biped3_fallen(b) {
+			DrawText("fell", 20, 74, 22, Color{230, 110, 90, 255})
+		}
+		EndDrawing()
+		if t == 240 || t == 600 || t == 1080 {
+			TakeScreenshot("walker3_shot_" + str(t) + ".png")
+		}
+	}
+	CloseWindow()
+}
