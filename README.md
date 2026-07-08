@@ -1,47 +1,63 @@
 # machin-walker
 
-**A human-shaped biped that *learned* to walk.** A [tinybrain](https://github.com/javimosch/tinybrain) neural network (11 sensors → 14 hidden → 3 joint targets, ~3.5 KB JSON) drives six torque-limited joints of a 1.75 m / 70 kg humanoid through a rigorous pure-[machin](https://github.com/javimosch/machin) physics simulation — and walks **18.7 m in 20 s (~0.94 m/s, 2.2 steps/s — human cadence)** without falling, on *any* sensor-noise seed. The challenge bar was 10 m; every held-out evaluation clears it by 8+ m.
+**A human-shaped biped that *learned* to run.** A [tinybrain](https://github.com/javimosch/tinybrain) neural network (13 sensors → 16 → 4, one ~4.7 KB JSON artifact) drives six torque-limited joints — *and its own gait clock* — of a 1.75 m / 70 kg humanoid through a rigorous pure-[machin](https://github.com/javimosch/machin) physics simulation. The certified artifact covers **12.5 m at 1.3–1.5 m/s with zero falls on every noise seed never seen in training**, in a natural flight-phase running gait with human-flexing knees and counter-swinging arms.
+
+**[▶ watch it run in your browser](https://javimosch.github.io/machin-walker/)** — the physics runs in wasm; JS only draws.
 
 This is the "how machin could make robots walk" demo: everything a real robot controller is allowed — and nothing it isn't.
 
-## The physics contract (what makes it honest)
+## Run vs. walk — the honest framing
 
-`src/pbd.src` is an XPBD-style articulated-body simulation whose rules are *enforced by tests* (`tests/pbd_test.src`, 10 assertions):
+The challenge was "walk 10m". What evolution found is a **run** (~45–55% of each stride airborne, like human running; walking means a foot always planted). We certified the run honestly rather than relabeling it: the gate demands ≥10 m, zero falls, on 5 held-out noise seeds, evaluated on the *saved and reloaded* artifact — but it does **not** constrain flight. A strict low-flight **walk remains the open milestone**: two 1440-cell scans prove no open-loop human-knee gait exists in this sim (feedback is required from step one), and every fitness shape we tried for flight suppression either pinned populations at salvage scores (cliffs) or flattened at the floor (bounded slopes). The full negative-result log is in the commit history — it's the most instructive part of the repo.
 
-- **Internal actuation only.** A joint motor is the textbook PBD angular-constraint projection between two adjacent segments — torque-limited, and momentum-conserving *by construction* (`grad_b = -(grad_a+grad_c)`). Airborne motor flailing translates the center of mass by **9e-14 m** over a second. No world-frame springs, no balance assist, no velocity caps.
-- **Coulomb ground friction.** Static cone + kinetic slide; a shoved box's slide distance matches `v²/2μg` theory to three digits.
-- **Inverse-mass-weighted constraints**, substepped integration, joint mechanical limits (knees can't hyperextend).
-- Motor authority calibrated to human-ish joint speeds (~11 rad/s hip). With 5× that, evolution found a 3.3 m/s dive-sprint — physics exploits are a fitness-function code smell.
+## The physics contract (enforced by tests)
 
-Dynamics are **planar (sagittal)** — the Walker2D-standard configuration real planar bipeds (e.g. RABBIT) used; the 3D skeleton gets its lateral dimension back at render time. Full-3D lateral balance is future work, declared not smuggled.
+`src/pbd.src` (planar) and `src/pbd3.src` (3D, for the lateral-balance milestone) are XPBD-style articulated-body simulations whose rules are *tested*, not promised:
+
+- **Internal actuation only.** Joint motors are textbook PBD angular-constraint projections — torque-limited, momentum-conserving by construction (`grad_b = -(grad_a+grad_c)`). Airborne flailing moves the COM by 1e-13 m. No world-frame springs, no balance assist, no velocity caps.
+- **Coulomb friction**: kinetic slide distance matches `v²/2μg` to three digits; the 3D core has a true tangential friction cone (diagonal slides preserve direction).
+- Inverse-mass constraints, substeps, joint limits (knees flex only the human way — a sign bug here once produced a very convincing *backwards* walker).
+- Motor authority calibrated to ~11 rad/s hip; 5× that produced a physics-exploit dive-sprint, caught and fixed.
+
+Dynamics are **planar (sagittal)** — Walker2D-standard — rendered as a 3D skeleton. The full-3D rig (widened pelvis, tripod feet, frontal hip/ankle motors) is built, contract-tested, and staged in `src/*3.src` + `ml/walk3_train.src`.
 
 ## The controller
 
-One net is the whole controller, evaluated per leg per tick with a half-cycle phase shift (mirror symmetry — same policy, legs π apart). Inputs: gait phase (sin/cos), torso pitch, hip height, forward velocity, 4 joint angles, 2 foot contacts — all with ±1 % sensor noise. Outputs: target angles for hip/knee/ankle servos. The artifact is a plain tinybrain JSON any MFL program loads with `net_load` + `net_forward`.
+One net is the whole controller, run once per leg per tick at phase φ and φ+π (mirror symmetry). Inputs: gait phase, torso pitch **and pitch rate**, hip height, forward **and vertical** velocity, 4 joint angles, 2 foot contacts — ±1–1.5 % sensor noise always on in training. Outputs: hip/knee/ankle servo targets **plus a clock-rate modulation** (learned step timing — capture-point stepping is what made self-balance possible; without it every curriculum stalled at the assist→zero cliff). Arms counter-swing through weak torque-limited shoulder servos — real masses, part of the trained dynamics.
 
 ## How it was trained (the honest arc)
 
-Five failure modes, each diagnosed and kept in the history:
+Every failure mode was diagnosed, fixed, and left in the history:
 
-1. **Superhuman torques** → a 12.7 m dive-sprint that ends face-down. Fixed by calibrating motor caps.
-2. **Distance-only fitness** → hopping (30 % flight time). Fixed by flight + crouch penalties: walking means a foot on the ground.
-3. **Noise-free training** → champions overfit to exact weight *bits* (chaotic contact dynamics): 10.4 m in training, 6.7 m after artifact save/load. Fixed by ±1 % sensor noise.
-4. **Plain GA from scratch** crawled (+0.5 fitness per 300 generations). Fixed by the tinybrain doctrine: a 6-parameter open-loop **CPG** (sinusoidal joint targets) found by random search becomes the expert, SGD **clones** it into the net, `evolve_run` with `warm_start` grows sensor feedback on top — 22 m within 16 generations.
-5. **Fixed evaluation seeds get memorized** — twice (2 seeds, then 5). Fixed by the **gated convergence loop** (`ml/walk_train4.src`): every round re-draws its training seeds and warm-starts from the *reloaded* previous champion; the only exit is the deliverable itself — the saved artifact walking ≥10 m with **zero falls on 5 noise seeds never used in any round**. Passed in 3 rounds.
+1. **Superhuman torques** → 3.3 m/s dive-sprint exploit → calibrated motor caps.
+2. **Distance-only fitness** → hopping → flight/crouch shaping.
+3. **Noise-free training** → champions overfit to exact weight bits (chaotic contact dynamics) → sensor noise, robust scoring.
+4. **Plain GA crawled** → tinybrain doctrine: CPG expert → SGD clone → `warm_start` evolve.
+5. **No derivative senses** → posture limit-cycles → pitch-rate + vertical-velocity inputs (the same lesson the arm reacher taught).
+6. **Fixed evaluation seeds get memorized** — repeatedly → fresh seeds per round; gates only on the reloaded artifact.
+7. **Fixed gait clock** → can't step early to catch a fall → the learned clock-rate output; assist-free locomotion appeared within one curriculum of adding it.
+8. **Uncapped distance credit** bred a 40 m leaper → credit caps at 12 m; nothing beyond the goal pays.
+9. **A memory leak in paradise**: machin goroutine arenas are reclaimed only on return — persistent parallel-evolve workers exhausted 10 GB over a multi-hour run → fixed upstream in tinybrain (arena-wrapped exchange + periodic worker respawn).
 
-Training runs on a 14-core box via tinybrain's **parallel fitness evaluation** (`cfg.workers` — a feature this project drove upstream): genomes cross channels as f64-bit strings, fitness must be pure, machin's data-race inference verifies the composed trainer, and results are bit-identical to sequential.
+Training runs on a 14-core box via tinybrain's parallel evolution (`cfg.workers`, bit-identical to sequential, race-inference-verified) — a feature this project drove upstream, twice.
 
 ## Run it
 
 ```sh
-./tests/run_tests.sh    # physics contract (10) + the walk gate on the committed artifact (8)
-./build.sh && ./walker-game   # watch it walk: 3D skeleton, tracking camera, HUD distance/speed
+./tests/run_tests.sh    # physics contracts (2D: 10, 3D: 7) + the locomotion gate on the committed artifact (9)
+./build.sh && ./walker-game    # watch it: 3D skeleton, tracking camera, HUD
+./web/build.sh                 # rebuild docs/ (the GitHub Pages demo)
 ```
 
-`ml/walk_train4.src` retrains end-to-end (see header; deterministic, ~minutes on 12+ cores).
+`ml/walk_train5.src` retrains end-to-end on a many-core box; `ml/walk3_train.src` is the staged 3D lateral-balance pipeline (distills this artifact as its teacher).
 
-## Honest numbers
+## Certified numbers (committed artifact, `ml/models/walker.json`)
 
-- Noise-free: **18.66 m** in 20 s, 44 steps, 77 % single-support / 18 % double / 4.5 % flight, hip 0.89–0.98 m, no fall.
-- 5 gate seeds (never trained on): min **18.79 m**, zero falls.
-- 8 additional fresh seeds: min 15.25 m, **1 fall in 8** — robust, not invincible.
+- Noise-free: 12.5 m in 8.6 s (1.46 m/s), upright, zero falls, knees flexing human-way.
+- 5 gate seeds (never trained on): min 12.51 m, **zero falls**.
+- Gait: flight fraction 42–53 % (a run); cadence self-modulated around 0.95 Hz.
+
+## Open milestones
+
+- **Strict walk** (<8 % flight) — the fitness-design notes above are the map.
+- **Lateral balance** (full 3D) — physics + rig + trainer staged; launches next.

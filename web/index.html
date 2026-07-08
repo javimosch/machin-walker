@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>machin-walker — a tiny neural net learned to walk</title>
+<title>machin-walker — a tiny neural net learned to run</title>
 <style>
   body { margin: 0; background: #14161a; color: #eaeaea; font: 15px/1.5 system-ui, sans-serif;
          display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 12px; }
@@ -17,16 +17,19 @@
 </head>
 <body>
 <h1>machin-walker</h1>
-<p>A <a href="https://github.com/javimosch/tinybrain">tinybrain</a> neural network (11 sensors → 14 → 3,
-one ~3.5&nbsp;KB JSON artifact) drives six torque-limited joints of a 1.75&nbsp;m / 70&nbsp;kg biped through a
-rigorous pure-<a href="https://github.com/javimosch/machin">machin</a> physics simulation, compiled to
-WebAssembly. Internal joint torques only — no balance assist, no velocity caps, momentum-conserving
-motors, Coulomb friction. The physics below runs in your browser; JS only draws.</p>
+<p>A <a href="https://github.com/javimosch/tinybrain">tinybrain</a> neural network (13 sensors → 16 → 4,
+one ~4.7&nbsp;KB JSON artifact) drives six torque-limited joints — and its own gait clock — of a
+1.75&nbsp;m / 70&nbsp;kg biped through a rigorous pure-<a href="https://github.com/javimosch/machin">machin</a>
+physics simulation, compiled to WebAssembly. Internal joint torques only — no balance assist, no
+velocity caps, momentum-conserving motors, Coulomb friction. It learned to <b>run</b> (a flight-phase
+gait at ~1.5&nbsp;m/s, zero falls on noise seeds never seen in training); a strict low-flight
+<i>walk</i> is the declared open milestone. The physics below runs in your browser; JS only draws.</p>
 <canvas id="cv" width="1100" height="700"></canvas>
 <div id="status">loading…</div>
 <p class="facts">Learned by neuroevolution with a curriculum: an open-loop gait prior is SGD-cloned into
-the net, a training harness anneals to zero, and the gate only accepts the saved artifact walking
-&ge;10&nbsp;m with zero falls on noise seeds never used in training.
+the net, a training harness anneals to zero, learned step-timing (the net modulates its own clock) unlocks
+self-balance, and the gate only accepts the saved artifact covering &ge;10&nbsp;m with zero falls on noise
+seeds never used in training.
 <a href="https://github.com/javimosch/machin-walker">Source &amp; the honest training log</a>.</p>
 <script type="module">
 const status = (m) => document.getElementById('status').textContent = m;
@@ -120,7 +123,7 @@ try {
     draw();
     requestAnimationFrame(frame);
   }
-  status('the artifact is walking — physics in wasm, drawing in JS');
+  status('the artifact is running — physics in wasm, drawing in JS');
   requestAnimationFrame(frame);
 } catch (e) { status('failed: ' + e.message); console.error(e); }
 </script>

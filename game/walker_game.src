@@ -139,7 +139,7 @@ func main() {
 		draw_walker(b)
 		EndMode3D()
 		dist := hx - x0
-		DrawText("machin-walker: an 11-neuron-in tinybrain net drives 6 torque-limited joints", 20, 16, 18, hud)
+		DrawText("machin-walker: a 13-sensor tinybrain net drives 6 torque-limited joints + its own gait clock", 20, 16, 18, hud)
 		DrawText("distance " + fmt2w(dist) + " m   speed " + fmt2w(biped_vx(b, walk_dt())) + " m/s   t " + fmt2w(float(t) * walk_dt()) + " s", 20, 44, 22, Color{120, 220, 130, 255})
 		if biped_fallen(b) {
 			DrawText("fell", 20, 74, 22, Color{230, 110, 90, 255})
