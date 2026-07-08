@@ -11,11 +11,22 @@
 // Compose: src/pbd.src src/body.src src/walk_task.src (teacher sim) is NOT
 // needed — only the teacher NET; this composes pbd3/body3/walk3 + tinybrain.
 
+// 5-episode fitness: TWO assisted seeds + worst-of-THREE zero-assist seeds.
+// Three episodes bred seed-local "mastery" that evaporated on any fresh seed
+// (levels ping-ponged); breadth is the only cure for memorization.
 func w3fit(n, maxTicks, base, assist) (f) {
 	s1 := walk3_ep_score(walk3_episode_h(n, maxTicks, base, assist), maxTicks)
-	s2 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 17, assist / 3.0), maxTicks)
-	s3 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 34, 0.0), maxTicks)
-	f = (s1 + s2 + 2.0 * s3) / 4.0
+	s2 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 61, assist), maxTicks)
+	z := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 34, 0.0), maxTicks)
+	z2 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 51, 0.0), maxTicks)
+	if z2 < z {
+		z = z2
+	}
+	z3 := walk3_ep_score(walk3_episode_h(n, maxTicks, base + 68, 0.0), maxTicks)
+	if z3 < z {
+		z = z3
+	}
+	f = (s1 + s2 + 2.0 * z) / 4.0
 }
 
 func w3gate(n, maxTicks) (minDist, falls, maxFlight, maxDrift) {
@@ -156,12 +167,12 @@ func walk3_curriculum(n, maxTicks) {
 		}
 		cfg := evolve_cfg_default()
 		cfg.pop = 96
-		cfg.generations = 150
+		cfg.generations = 120
 		cfg.elite = 8
 		cfg.mut_rate = 0.12
 		cfg.mut_sigma = 0.15
 		if a < 0.1 {
-			cfg.generations = 250
+			cfg.generations = 200
 			cfg.mut_sigma = 0.08
 		}
 		cfg.warm_start = true
@@ -186,7 +197,7 @@ func walk3_curriculum(n, maxTicks) {
 		flush()
 		seedTick = seedTick + 1
 		totalRounds = totalRounds + 1
-		if totalRounds > 60 {
+		if totalRounds > 36 {
 			println("{\"curriculum\":\"budget exhausted\"}")
 			flush()
 			break
