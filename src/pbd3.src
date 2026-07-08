@@ -29,6 +29,12 @@ type World3 struct {
 	jmaxcorr []float
 	jlo []float
 	jhi []float
+	calign []int
+	aoff []float
+	astiff []float
+	amaxcorr []float
+	alo []float
+	ahi []float
 	contact []int
 }
 
@@ -67,7 +73,10 @@ func w3_add_bone(w, a, b) (w2) {
 }
 
 // planar hinge at b between (b->a) and (b->c); plane 0 = sagittal (x,y),
-// plane 1 = frontal (z,y). Angle relative to the creation pose.
+// plane 1 = frontal (z,y), plane 2 = TRANSVERSE (x,z — the twist plane:
+// without stabilizers here a biped's free hip-twist DOF lets ground torques
+// spin the whole body over the stance leg; measured 130 deg of pelvis yaw).
+// Angle relative to the creation pose.
 func w3_add_joint(w, a, b, c, plane, stiff, maxcorr, lo, hi) (ji, w2) {
 	w2 = w
 	ji = len(w2.jtarget)
@@ -93,11 +102,18 @@ func wrap_pi3(a) (o) {
 	}
 }
 
-// the in-plane coordinate pair of particle i for a joint's plane
+// the in-plane coordinate pair (u,v) of particle i for a joint's plane
 func w3_u(w, i, plane) (u) {
 	u = w.px[i]
 	if plane == 1 {
 		u = w.pz[i]
+	}
+}
+
+func w3_v(w, i, plane) (v) {
+	v = w.py[i]
+	if plane == 2 {
+		v = w.pz[i]
 	}
 }
 
@@ -107,9 +123,9 @@ func w3_joint_angle_raw(w, ji) (th) {
 	c := w.cjoints[ji * 3 + 2]
 	pl := w.jplane[ji]
 	v1u := w3_u(w, a, pl) - w3_u(w, b, pl)
-	v1y := w.py[a] - w.py[b]
+	v1y := w3_v(w, a, pl) - w3_v(w, b, pl)
 	v2u := w3_u(w, c, pl) - w3_u(w, b, pl)
-	v2y := w.py[c] - w.py[b]
+	v2y := w3_v(w, c, pl) - w3_v(w, b, pl)
 	th = wrap_pi3(atan2(v2y, v2u) - atan2(v1y, v1u))
 }
 
@@ -187,9 +203,9 @@ func w3_satisfy_joint(w, ji) {
 	c := w.cjoints[ji * 3 + 2]
 	pl := w.jplane[ji]
 	rau := w3_u(w, a, pl) - w3_u(w, b, pl)
-	ray := w.py[a] - w.py[b]
+	ray := w3_v(w, a, pl) - w3_v(w, b, pl)
 	rcu := w3_u(w, c, pl) - w3_u(w, b, pl)
-	rcy := w.py[c] - w.py[b]
+	rcy := w3_v(w, c, pl) - w3_v(w, b, pl)
 	la2 := rau * rau + ray * ray
 	lc2 := rcu * rcu + rcy * rcy
 	if la2 < 0.000000001 || lc2 < 0.000000001 {
@@ -209,18 +225,117 @@ func w3_satisfy_joint(w, ji) {
 		return
 	}
 	lam := err / denom
-	if pl == 0 {
-		w.px[a] = w.px[a] + lam * wa * gau
-		w.px[b] = w.px[b] + lam * wb * gbu
-		w.px[c] = w.px[c] + lam * wc * gcu
-	} else {
+	if pl == 1 {
 		w.pz[a] = w.pz[a] + lam * wa * gau
 		w.pz[b] = w.pz[b] + lam * wb * gbu
 		w.pz[c] = w.pz[c] + lam * wc * gcu
+	} else {
+		w.px[a] = w.px[a] + lam * wa * gau
+		w.px[b] = w.px[b] + lam * wb * gbu
+		w.px[c] = w.px[c] + lam * wc * gcu
 	}
-	w.py[a] = w.py[a] + lam * wa * gay
-	w.py[b] = w.py[b] + lam * wb * gby
-	w.py[c] = w.py[c] + lam * wc * gcy
+	if pl == 2 {
+		w.pz[a] = w.pz[a] + lam * wa * gay
+		w.pz[b] = w.pz[b] + lam * wb * gby
+		w.pz[c] = w.pz[c] + lam * wc * gcy
+	} else {
+		w.py[a] = w.py[a] + lam * wa * gay
+		w.py[b] = w.py[b] + lam * wb * gby
+		w.py[c] = w.py[c] + lam * wc * gcy
+	}
+}
+
+// BEARING-ALIGNMENT constraint (the twist stabilizer): keeps the horizontal
+// heading of segment p3->p4 aligned with the heading of segment p1->p2
+// (offset-normalized at creation). Unlike a shared-vertex transverse hinge —
+// which is either degenerate (vertical limbs have no x-z arm) or conflates
+// leg swing with twist — two independent bearings on two rigid bodies
+// measure pure relative YAW. Gradients are equal-and-opposite within each
+// pair, so momentum is conserved by construction.
+func w3_bearing(w, i, j) (th, l2) {
+	dx := w.px[j] - w.px[i]
+	dz := w.pz[j] - w.pz[i]
+	th = atan2(dz, dx)
+	l2 = dx * dx + dz * dz
+}
+
+func w3_add_align(w, p1, p2, p3, p4, stiff, maxcorr, lo, hi) (w2) {
+	w2 = w
+	w2.calign = append(w2.calign, p1)
+	w2.calign = append(w2.calign, p2)
+	w2.calign = append(w2.calign, p3)
+	w2.calign = append(w2.calign, p4)
+	b1, _ := w3_bearing(w2, p1, p2)
+	b2, _ := w3_bearing(w2, p3, p4)
+	w2.aoff = append(w2.aoff, wrap_pi3(b2 - b1))
+	w2.astiff = append(w2.astiff, stiff)
+	w2.amaxcorr = append(w2.amaxcorr, maxcorr)
+	w2.alo = append(w2.alo, lo)
+	w2.ahi = append(w2.ahi, hi)
+}
+
+func w3_align_angle(w, k) (th) {
+	b1, _ := w3_bearing(w, w.calign[k * 4], w.calign[k * 4 + 1])
+	b2, _ := w3_bearing(w, w.calign[k * 4 + 2], w.calign[k * 4 + 3])
+	th = wrap_pi3(b2 - b1 - w.aoff[k])
+}
+
+func w3_satisfy_align(w, k) {
+	p1 := w.calign[k * 4]
+	p2 := w.calign[k * 4 + 1]
+	p3 := w.calign[k * 4 + 2]
+	p4 := w.calign[k * 4 + 3]
+	b1, l1 := w3_bearing(w, p1, p2)
+	b2, l2 := w3_bearing(w, p3, p4)
+	if l1 < 0.0004 || l2 < 0.0004 {
+		return
+	}
+	th := wrap_pi3(b2 - b1 - w.aoff[k])
+	t := th
+	if t < w.alo[k] {
+		t = w.alo[k]
+	}
+	if t > w.ahi[k] {
+		t = w.ahi[k]
+	}
+	// servo toward the clamped angle (passive: target is the clamp itself)
+	err := wrap_pi3(t - th) * w.astiff[k]
+	// plus hard restoring when outside limits was handled by the clamp; for a
+	// pure stabilizer the target is 0 within limits:
+	err = wrap_pi3(0.0 - th) * w.astiff[k]
+	mc := w.amaxcorr[k]
+	if err > mc {
+		err = mc
+	}
+	if err < -mc {
+		err = -mc
+	}
+	if absf3(err) < 0.0000001 {
+		return
+	}
+	// gradients: d(th)/d(p4) = perp(v2)/l2, d(th)/d(p3) = -that;
+	// d(th)/d(p2) = -perp(v1)/l1, d(th)/d(p1) = +that. perp((x,z)) = (-z,x).
+	v1x := w.px[p2] - w.px[p1]
+	v1z := w.pz[p2] - w.pz[p1]
+	v2x := w.px[p4] - w.px[p3]
+	v2z := w.pz[p4] - w.pz[p3]
+	g4x := 0.0 - v2z / l2
+	g4z := v2x / l2
+	g2x := v1z / l1
+	g2z := 0.0 - v1x / l1
+	wsum := w.w[p1] * (g2x * g2x + g2z * g2z) + w.w[p2] * (g2x * g2x + g2z * g2z) + w.w[p3] * (g4x * g4x + g4z * g4z) + w.w[p4] * (g4x * g4x + g4z * g4z)
+	if wsum < 0.000000001 {
+		return
+	}
+	lam := err / wsum
+	w.px[p4] = w.px[p4] + lam * w.w[p4] * g4x
+	w.pz[p4] = w.pz[p4] + lam * w.w[p4] * g4z
+	w.px[p3] = w.px[p3] - lam * w.w[p3] * g4x
+	w.pz[p3] = w.pz[p3] - lam * w.w[p3] * g4z
+	w.px[p2] = w.px[p2] + lam * w.w[p2] * g2x
+	w.pz[p2] = w.pz[p2] + lam * w.w[p2] * g2z
+	w.px[p1] = w.px[p1] - lam * w.w[p1] * g2x
+	w.pz[p1] = w.pz[p1] - lam * w.w[p1] * g2z
 }
 
 // ground y=0: non-penetration + a true tangential friction CONE (x,z)
@@ -281,6 +396,11 @@ func w3_step(w, dt, substeps, iters) {
 			j := 0
 			while j < len(w.jtarget) {
 				w3_satisfy_joint(w, j)
+				j = j + 1
+			}
+			j = 0
+			while j < len(w.aoff) {
+				w3_satisfy_align(w, j)
 				j = j + 1
 			}
 			k := 0

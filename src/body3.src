@@ -50,7 +50,7 @@ func b3_hipf_pow() (v) { v = 0.0035 }
 func b3_ankf_pow() (v) { v = 0.0025 }
 
 // one leg hanging from hip particle hx at lateral offset z
-func biped3_leg(w, hx, chest, z) (knee, ankle, toe, heelI, heelO, jHip, jKnee, jAnk, jHipF, jAnkF, w2) {
+func biped3_leg(w, hx, chest, other, z) (knee, ankle, toe, heelI, heelO, jHip, jKnee, jAnk, jHipF, jAnkF, w2) {
 	w2 = w
 	knee, w2 = w3_add_pt(w2, 0.0, 0.52, z, 7.0)
 	ankle, w2 = w3_add_pt(w2, 0.0, 0.08, z, 3.0)
@@ -74,6 +74,12 @@ func biped3_leg(w, hx, chest, z) (knee, ankle, toe, heelI, heelO, jHip, jKnee, j
 	// frontal set: hip ab/adduction + ankle inversion
 	jHipF, w2 = w3_add_joint(w2, chest, hx, knee, 1, 0.9, b3_hipf_pow(), -0.45, 0.45)
 	jAnkF, w2 = w3_add_joint(w2, knee, ankle, heelO, 1, 0.9, b3_ankf_pow(), -0.35, 0.35)
+	// TWIST stabilizer: align the FOOT's horizontal heading (ankle->toe) with
+	// the PELVIS heading (hipL->hipR bearing, offset-normalized) — a bearing
+	// alignment between two rigid bodies, the only formulation that measures
+	// pure relative yaw (shared-vertex transverse hinges are degenerate on
+	// vertical limbs, or conflate leg swing with twist and PUMP the spin)
+	w2 = w3_add_align(w2, hx, other, ankle, toe, 0.8, 0.005, -0.4, 0.4)
 }
 
 func biped3_arm(w, chest, hip, z) (elbow, hand, jSh, jElb, w2) {
@@ -114,7 +120,7 @@ func biped3_new() (b) {
 	s1, wg := w3_add_joint(wf, b.head, b.chest, b.hip, 1, 0.8, 0.0042, -0.4, 0.4)
 	b.jSpineF = s1
 	w = wg
-	k1, a1, t1, hi1, ho1, j1, j2, j3, j4, j5, w1 := biped3_leg(w, b.hipL, b.chest, -0.09)
+	k1, a1, t1, hi1, ho1, j1, j2, j3, j4, j5, w1 := biped3_leg(w, b.hipL, b.chest, b.hipR, -0.09)
 	b.kneeL = k1
 	b.ankleL = a1
 	b.toeL = t1
@@ -125,7 +131,7 @@ func biped3_new() (b) {
 	b.jAnkL = j3
 	b.jHipFL = j4
 	b.jAnkFL = j5
-	k2, a2, t2, hi2, ho2, j6, j7, j8, j9, j10, w2 := biped3_leg(w1, b.hipR, b.chest, 0.09)
+	k2, a2, t2, hi2, ho2, j6, j7, j8, j9, j10, w2 := biped3_leg(w1, b.hipR, b.chest, b.hipL, 0.09)
 	b.kneeR = k2
 	b.ankleR = a2
 	b.toeR = t2
@@ -166,6 +172,18 @@ func biped3_roll(b) (r) {
 	dz := b.w.pz[b.chest] - b.w.pz[b.hip]
 	dy := b.w.py[b.chest] - b.w.py[b.hip]
 	r = atan2(dz, dy)
+}
+
+// pelvis yaw: bearing of the hipL->hipR axis vs its neutral (+z)
+func biped3_yaw(b) (y) {
+	y = atan2(b.w.px[b.hipR] - b.w.px[b.hipL], b.w.pz[b.hipR] - b.w.pz[b.hipL])
+}
+
+func biped3_yaw_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	vLx := (b.w.px[b.hipL] - b.w.ox[b.hipL]) / sdt
+	vRx := (b.w.px[b.hipR] - b.w.ox[b.hipR]) / sdt
+	r = (vRx - vLx) / 0.18
 }
 
 func biped3_fallen(b) (f) {

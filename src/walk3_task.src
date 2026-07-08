@@ -55,9 +55,9 @@ func walk3_noise(seed, t, i) (v) {
 	v = (x - floor(x)) * 2.0 - 1.0
 }
 
-// per-leg inputs (18). `mir` = +1 for the left leg, -1 for the right: every
+// per-leg inputs (20). `mir` = +1 for the left leg, -1 for the right: every
 // LATERAL quantity is multiplied by mir so one policy serves both legs in a
-// mirrored world.
+// mirrored world. Yaw + yaw rate let the policy steer its heading.
 func walk3_inputs(b, ph, mir, jHip, jKnee, jAnk, jHipF, jAnkF, jHipO, cT, cO, nz, nseed, nt) (x) {
 	x = []float{}
 	x = append(x, sin(ph))
@@ -70,6 +70,8 @@ func walk3_inputs(b, ph, mir, jHip, jKnee, jAnk, jHipF, jAnkF, jHipO, cT, cO, nz
 	x = append(x, biped3_vx(b, walk3_dt()) / 2.0)
 	x = append(x, biped3_vy(b, walk3_dt()) / 1.5)
 	x = append(x, mir * biped3_vz(b, walk3_dt()) / 1.5)
+	x = append(x, mir * biped3_yaw(b))
+	x = append(x, mir * biped3_yaw_rate(b, walk3_dt()) / 3.0)
 	x = append(x, w3_joint_angle(b.w, jHip))
 	x = append(x, w3_joint_angle(b.w, jKnee))
 	x = append(x, w3_joint_angle(b.w, jAnk))
@@ -131,10 +133,11 @@ type Walk3Ep struct {
 	fell bool
 	flight int
 	lowhip float
+	maxyaw float
 }
 
 func walk3_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
-	ep = Walk3Ep{dist: 0.0, drift: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	ep = Walk3Ep{dist: 0.0, drift: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0, maxyaw: 0.0}
 	nz := 0.0
 	if noiseSeed > 0 {
 		nz = 0.01
@@ -170,6 +173,10 @@ func walk3_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 		if h < 0.82 {
 			ep.lowhip = ep.lowhip + (0.82 - h)
 		}
+		yv := absf3(biped3_yaw(b))
+		if yv > ep.maxyaw {
+			ep.maxyaw = yv
+		}
 		t = t + 1
 		if biped3_fallen(b) {
 			ep.fell = true
@@ -198,4 +205,7 @@ func walk3_ep_score(ep, maxTicks) (f) {
 	f = f - 2.0 * float(ep.flight) / tk
 	f = f - 2.0 * ep.lowhip / tk
 	f = f - 0.5 * ep.drift
+	// heading discipline: walking +x means keeping your heading; a full spin
+	// scores like a fall
+	f = f - 1.5 * ep.maxyaw
 }

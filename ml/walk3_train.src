@@ -50,7 +50,7 @@ func main() {
 		exit(1)
 	}
 	tb_seed(42)
-	n := net_new([]int{18, 20, 6}, []string{"tanh", "tanh"}, 42)
+	n := net_new([]int{20, 22, 6}, []string{"tanh", "tanh"}, 42)
 	ds := Dataset{}
 	i := 0
 	while i < 6000 {
@@ -84,6 +84,8 @@ func main() {
 		x = append(x, vx)
 		x = append(x, vy)
 		x = append(x, vz)
+		x = append(x, tb_randf_range(-0.5, 0.5))   // yaw
+		x = append(x, tb_randf_range(-0.6, 0.6))   // yaw rate
 		x = append(x, hip)
 		x = append(x, knee)
 		x = append(x, ank)
@@ -151,7 +153,8 @@ func main() {
 		res, champ := evolve_run(n, fit, cfg)
 		net_save(champ, "ml/models/walker3_h.json")
 		n = net_load("ml/models/walker3_h.json")
-		println("{\"harness3_round\":" + str(r) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + "}")
+		dep := walk3_episode_h(n, maxTicks, base + 99, a)
+		println("{\"harness3_round\":" + str(r) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"maxyaw_deg\":" + tb_fmt(dep.maxyaw * 57.3) + ",\"fell\":" + str(dep.fell) + "}}")
 		flush()
 		r = r + 1
 	}
