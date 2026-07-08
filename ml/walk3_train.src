@@ -163,7 +163,11 @@ func main() {
 		println("{\"harness3_level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"maxyaw_deg\":" + tb_fmt(dep.maxyaw * 57.3) + ",\"fell\":" + str(dep.fell) + "}}")
 		flush()
 		seedTick = seedTick + 1
-		if res.best_fitness >= 5.0 || attempt >= 3 {
+		// mastery = the fresh-seed DIAGNOSTIC at this assist level (no fall,
+		// covers 8m+). The blended train fitness is dominated by zero-assist
+		// episodes and cannot pass any bar early — a champion walked 12.5m
+		// clean under harness while the blend read 3.9.
+		if (dep.fell == false && dep.dist >= 8.0) || attempt >= 3 {
 			r = r + 1
 			attempt = 0
 		} else {
