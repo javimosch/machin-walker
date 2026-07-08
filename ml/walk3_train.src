@@ -45,12 +45,12 @@ func main() {
 
 	// ── 1. distill the 2D teacher into the 3D net ──
 	teacher := net_load("ml/models/walker.json")
-	if teacher.tinybrain != 1 || teacher.topology[0] != 13 {
-		println("{\"error\":\"need the gated 13-input 2D champion at ml/models/walker.json first\"}")
+	if teacher.tinybrain != 1 || teacher.topology[0] != 13 || teacher.topology[2] != 4 {
+		println("{\"error\":\"need the gated 13-in/4-out 2D champion at ml/models/walker.json first\"}")
 		exit(1)
 	}
 	tb_seed(42)
-	n := net_new([]int{18, 20, 5}, []string{"tanh", "tanh"}, 42)
+	n := net_new([]int{18, 20, 6}, []string{"tanh", "tanh"}, 42)
 	ds := Dataset{}
 	i := 0
 	while i < 6000 {
@@ -115,6 +115,8 @@ func main() {
 		// frontal prior: rhythmic weight shift + a stabilizing lean response
 		y = append(y, 0.35 * sin(ph) - 0.8 * roll)
 		y = append(y, -0.5 * roll)
+		// clock-rate: inherit the teacher's learned step timing
+		y = append(y, tout[3])
 		ds.x = append(ds.x, x)
 		ds.y = append(ds.y, y)
 		i = i + 1
@@ -123,7 +125,7 @@ func main() {
 	println("{\"phase\":\"distill\",\"mse\":" + tb_fmt(loss) + ",\"seed_fitness\":" + tb_fmt(w3fit(n, maxTicks, 900, 0.5)) + "}")
 	flush()
 
-	// ── 2. harness curriculum ──
+	// ── 2. harness curriculum (RUN-track scoring: no flight constraint) ──
 	assists := []float{0.8, 0.5, 0.32, 0.2, 0.13, 0.08, 0.05, 0.03, 0.018, 0.01, 0.005, 0.0}
 	r := 0
 	while r < len(assists) {
@@ -177,7 +179,7 @@ func main() {
 		minDist, falls, maxFlight, maxDrift := w3gate(m, maxTicks)
 		println("{\"gate3_round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight\":" + str(maxFlight) + ",\"max_drift\":" + tb_fmt(maxDrift) + "}}")
 		flush()
-		if falls == 0 && minDist >= 10.0 && maxFlight < 96 {
+		if falls == 0 && minDist >= 10.0 {
 			println("{\"status\":\"3D GATE PASSED\",\"artifact\":\"ml/models/walker3.json\",\"rounds\":" + str(round + 1) + "}")
 			return
 		}

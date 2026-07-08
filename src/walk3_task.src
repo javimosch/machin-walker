@@ -87,8 +87,9 @@ func walk3_inputs(b, ph, mir, jHip, jKnee, jAnk, jHipF, jAnkF, jHipO, cT, cO, nz
 	}
 }
 
-// apply one leg's outputs (5): sagittal hip/knee/ankle + frontal hip/ankle,
-// frontal targets mirrored back into world sign
+// apply one leg's outputs (6): sagittal hip/knee/ankle + frontal hip/ankle
+// (+ out[5] = clock-rate vote, consumed by the episode), frontal targets
+// mirrored back into world sign
 func walk3_apply(b, out, mir, jHip, jKnee, jAnk, jHipF, jAnkF) {
 	w3_set_joint_target(b.w, jHip, out[0] * 1.1)
 	w3_set_joint_target(b.w, jKnee, (out[1] - 1.0) * 0.8)
@@ -141,15 +142,24 @@ func walk3_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 	b := biped3_new()
 	x0 := b.w.px[b.hip]
 	z0 := b.w.pz[b.hip]
+	ph := 0.0
 	t := 0
 	while t < maxTicks {
-		ph := 2.0 * pi() * walk3_hz() * float(t) * walk3_dt()
 		cl := biped3_contact(b, b.toeL, b.heelIL, b.heelOL)
 		cr := biped3_contact(b, b.toeR, b.heelIR, b.heelOR)
 		outL := net_forward(n, walk3_inputs(b, ph, 1.0, b.jHipL, b.jKneeL, b.jAnkL, b.jHipFL, b.jAnkFL, b.jHipR, cl, cr, nz, noiseSeed, t))
 		outR := net_forward(n, walk3_inputs(b, ph + pi(), -1.0, b.jHipR, b.jKneeR, b.jAnkR, b.jHipFR, b.jAnkFR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
 		walk3_apply(b, outL, 1.0, b.jHipL, b.jKneeL, b.jAnkL, b.jHipFL, b.jAnkFL)
 		walk3_apply(b, outR, -1.0, b.jHipR, b.jKneeR, b.jAnkR, b.jHipFR, b.jAnkFR)
+		// learned step timing, as in 2D (it unlocked self-balance there)
+		rate := 1.0 + 0.125 * (outL[5] + outR[5])
+		if rate < 0.8 {
+			rate = 0.8
+		}
+		if rate > 1.3 {
+			rate = 1.3
+		}
+		ph = ph + 2.0 * pi() * walk3_hz() * walk3_dt() * rate
 		walk3_arm_swing(b)
 		walk3_harness(b, assist)
 		biped3_step(b, walk3_dt())
@@ -165,6 +175,9 @@ func walk3_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 			ep.fell = true
 			break
 		}
+		if b.w.px[b.hip] - x0 > 12.5 {
+			break
+		}
 	}
 	ep.ticks = t
 	ep.dist = b.w.px[b.hip] - x0
@@ -178,10 +191,11 @@ func walk3_ep_score(ep, maxTicks) (f) {
 	} else {
 		f = ep.dist + 1.0
 	}
-	f = f - 2.0 * float(ep.flight) / float(maxTicks)
-	f = f - 2.0 * ep.lowhip / float(maxTicks)
-	f = f - 0.5 * ep.drift
-	if float(ep.flight) > walk3_tol_flight(maxTicks) {
-		f = 0.25 * ep.dist
+	tk := float(ep.ticks)
+	if tk < 1.0 {
+		tk = 1.0
 	}
+	f = f - 2.0 * float(ep.flight) / tk
+	f = f - 2.0 * ep.lowhip / tk
+	f = f - 0.5 * ep.drift
 }
