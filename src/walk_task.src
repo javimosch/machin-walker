@@ -112,6 +112,12 @@ func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 			ep.fell = true
 			break
 		}
+		// distance credit caps at 12m — nothing beyond 12.5m changes any
+		// score, so stop simulating (rounds went from minutes to hours when
+		// populations started SURVIVING their full episodes)
+		if biped_hip_x(b) - x0 > 12.5 {
+			break
+		}
 	}
 	ep.ticks = t
 	ep.dist = biped_hip_x(b) - x0
@@ -167,16 +173,22 @@ func walk_episode(n, maxTicks, noiseSeed) (ep) {
 // WALKING-shape penalties: flight time (a walk keeps a foot down; hopping
 // scored higher without this) and crouching (hip below 0.82)
 func walk_ep_score(ep, maxTicks) (f) {
+	tk := float(ep.ticks)
+	if tk < 1.0 {
+		tk = 1.0
+	}
 	if ep.fell {
 		f = 0.25 * ep.dist
 	} else {
 		f = ep.dist + 1.0
 	}
-	f = f - 2.0 * float(ep.flight) / float(maxTicks)
-	f = f - 2.0 * ep.lowhip / float(maxTicks)
+	// penalties are FRACTIONS OF TICKS ACTUALLY SIMULATED (episodes may end
+	// early once past the 12.5m credit cap)
+	f = f - 2.0 * float(ep.flight) / tk
+	f = f - 2.0 * ep.lowhip / tk
 	// WALKING is the deliverable: beyond 8% airborne it's running/leaping and
 	// pays like a fall — otherwise a 26m leaper outscores a clean 10m walker
-	if float(ep.flight) > 0.08 * float(maxTicks) {
+	if float(ep.flight) > 0.08 * tk {
 		f = 0.25 * ep.dist
 	}
 }

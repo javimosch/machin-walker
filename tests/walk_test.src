@@ -24,7 +24,7 @@ func main() {
 	ep := walk_episode(n, 1200, 0)
 	check("walks >= 10m in 20s noise-free (got " + str(ep.dist) + "m)", ep.dist >= 10.0)
 	check("never falls noise-free", ep.fell == false)
-	check("walking, not hopping: flight < 8% of ticks (got " + str(ep.flight) + ")", float(ep.flight) < 96.0)
+	check("walking, not hopping: flight < 8% of simulated ticks (got " + str(ep.flight) + "/" + str(ep.ticks) + ")", float(ep.flight) < 0.08 * float(ep.ticks))
 	check("upright: no crouch penalty accumulated (got " + str(ep.lowhip) + ")", ep.lowhip < 12.0)
 
 	// human knees: mean knee flexion must be NEGATIVE (the backwards-knee
