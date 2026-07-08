@@ -1,0 +1,226 @@
+// ml/walk_train6.src — the SLOW WALK (2D): low cadence (0.62 Hz), grounded
+// gait, walking-shape fitness with a smooth flight slope. Two goals in one:
+//   * the strict-walk milestone (<8% flight) that 0.95 Hz running never met
+//   * the right TEACHER for 3D — lateral balance at running speed proved out
+//     of budget; every real biped walked slowly before it ran
+// Inherits every hard-won mechanism: adaptive bidirectional curriculum with
+// mastery-only checkpoints, 5-episode fitness breadth, arena-bounded evolve
+// calls, fresh seeds everywhere, reload-and-gate as the only exit.
+
+func w6score(n, maxTicks, seed, assist) (f) {
+	ep := walk_episode_h(n, maxTicks, seed, assist)
+	if ep.dist > 12.0 {
+		ep.dist = 12.0
+	}
+	tk := float(ep.ticks)
+	if tk < 1.0 {
+		tk = 1.0
+	}
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * ep.lowhip / tk
+	// smooth hyperbolic flight slope: full credit at <=4% airborne, always a
+	// gradient (bounded slopes flattened at their floor and stalled)
+	ff := float(ep.flight) / tk
+	if ff > 0.04 {
+		if f > 0.0 {
+			f = f / (1.0 + 10.0 * (ff - 0.04))
+		}
+	}
+}
+
+func w6fit(n, maxTicks, base, assist) (f) {
+	s1 := w6score(n, maxTicks, base, assist)
+	s2 := w6score(n, maxTicks, base + 61, assist)
+	z := w6score(n, maxTicks, base + 34, 0.0)
+	z2 := w6score(n, maxTicks, base + 51, 0.0)
+	if z2 < z {
+		z = z2
+	}
+	z3 := w6score(n, maxTicks, base + 68, 0.0)
+	if z3 < z {
+		z = z3
+	}
+	f = (s1 + s2 + 2.0 * z) / 4.0
+}
+
+func w6gate(n, maxTicks) (minDist, falls, maxFF) {
+	minDist = 1000000.0
+	falls = 0
+	maxFF = 0.0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := walk_episode(n, maxTicks, sd)
+		if ep.dist < minDist {
+			minDist = ep.dist
+		}
+		if ep.fell {
+			falls = falls + 1
+		}
+		tk := float(ep.ticks)
+		if tk < 1.0 {
+			tk = 1.0
+		}
+		fr := float(ep.flight) / tk
+		if fr > maxFF {
+			maxFF = fr
+		}
+	}
+}
+
+func main() {
+	g_hz = 0.62
+	maxTicks := 1800   // 30 s: 10m at a gentle 0.35+ m/s
+
+	prevH := net_load("ml/models/walker_slow_h.json")
+	if prevH.tinybrain == 1 && prevH.topology[0] == 13 {
+		println("{\"resume_from\":\"ml/models/walker_slow_h.json\"}")
+		flush()
+		w6curriculum(prevH, maxTicks)
+		return
+	}
+
+	// gait prior at the LOW cadence
+	tb_seed(42)
+	p, ps := cpg_search(1200, 800, maxTicks)
+	println("{\"phase\":\"cpg\",\"score\":" + tb_fmt(ps) + ",\"params\":" + tb_vec_json(p) + "}")
+	flush()
+	n := net_new([]int{13, 16, 4}, []string{"tanh", "tanh"}, 42)
+	ds := Dataset{}
+	i := 0
+	while i < 4000 {
+		ph := tb_randf_range(0.0, 2.0 * pi())
+		x := []float{}
+		x = append(x, sin(ph))
+		x = append(x, sin(ph + pi() / 2.0))
+		x = append(x, tb_randf_range(-0.4, 0.4))
+		x = append(x, tb_randf_range(-0.8, 0.8))
+		x = append(x, tb_randf_range(-0.6, 0.3))
+		x = append(x, tb_randf_range(-0.3, 0.8))
+		x = append(x, tb_randf_range(-0.6, 0.6))
+		x = append(x, tb_randf_range(-1.0, 1.2))
+		x = append(x, tb_randf_range(-1.8, 0.0))
+		x = append(x, tb_randf_range(-0.7, 0.7))
+		x = append(x, tb_randf_range(-1.0, 1.2))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		y := []float{}
+		y = append(y, cpg_hip(p, ph) / 1.1)
+		y = append(y, cpg_knee(p, ph) / 0.8 + 1.0)
+		y = append(y, cpg_ank(p, ph) / 0.5)
+		y = append(y, 0.0)
+		ds.x = append(ds.x, x)
+		ds.y = append(ds.y, y)
+		i = i + 1
+	}
+	loss := net_train_sgd(n, ds, 200, 0.02)
+	println("{\"phase\":\"clone\",\"mse\":" + tb_fmt(loss) + "}")
+	flush()
+	w6curriculum(n, maxTicks)
+}
+
+func w6curriculum(n, maxTicks) {
+	assists := []float{0.8, 0.5, 0.32, 0.2, 0.13, 0.08, 0.05, 0.03, 0.018, 0.01, 0.005, 0.0}
+	r := 0
+	attempt := 0
+	seedTick := 0
+	totalRounds := 0
+	while r < len(assists) {
+		a := assists[r]
+		base := 3000 + seedTick * 500
+		fit := func(nn) {
+			return w6fit(nn, maxTicks, base, a)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 96
+		cfg.generations = 120
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.15
+		if a < 0.1 {
+			cfg.generations = 200
+			cfg.mut_sigma = 0.08
+		}
+		cfg.warm_start = true
+		cfg.workers = 6
+		cfg.target_fitness = 0.0
+		cfg.print_every = 0
+		bestF := 0.0
+		arena {
+			res, champ := evolve_run(n, fit, cfg)
+			net_save(champ, "ml/models/walker_slow_try.json")
+			bestF = res.best_fitness
+		}
+		n = net_load("ml/models/walker_slow_try.json")
+		dep := walk_episode_h(n, maxTicks, base + 99, a)
+		tk := float(dep.ticks)
+		if tk < 1.0 {
+			tk = 1.0
+		}
+		println("{\"slow_level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(bestF) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"flight_frac\":" + tb_fmt(float(dep.flight) / tk) + ",\"fell\":" + str(dep.fell) + "}}")
+		flush()
+		seedTick = seedTick + 1
+		totalRounds = totalRounds + 1
+		if totalRounds > 36 {
+			println("{\"curriculum\":\"budget exhausted\"}")
+			flush()
+			break
+		}
+		if dep.fell == false && dep.dist >= 8.0 && float(dep.flight) < 0.10 * tk {
+			net_save(n, "ml/models/walker_slow_h.json")
+			r = r + 1
+			attempt = 0
+		} else {
+			attempt = attempt + 1
+			if attempt > 5 {
+				attempt = 0
+				prev := net_load("ml/models/walker_slow_h.json")
+				if prev.tinybrain == 1 {
+					n = prev
+				}
+				if r > 0 {
+					r = r - 1
+				}
+			}
+		}
+	}
+
+	// gate rounds: the WALK gate — reloaded artifact, 5 unseen seeds,
+	// >=10m, zero falls, <8% flight
+	round := 0
+	while round < 10 {
+		base := 50000 + round * 1000
+		fit := func(nn) {
+			return w6fit(nn, maxTicks, base, 0.0)
+		}
+		cfg := evolve_cfg_default()
+		cfg.pop = 96
+		cfg.generations = 200
+		cfg.elite = 8
+		cfg.mut_rate = 0.12
+		cfg.mut_sigma = 0.06
+		cfg.warm_start = true
+		cfg.workers = 6
+		cfg.target_fitness = 0.0
+		cfg.print_every = 0
+		gBest := 0.0
+		arena {
+			res, champ := evolve_run(n, fit, cfg)
+			net_save(champ, "ml/models/walker_slow.json")
+			gBest = res.best_fitness
+		}
+		m := net_load("ml/models/walker_slow.json")
+		minDist, falls, maxFF := w6gate(m, maxTicks)
+		println("{\"slow_gate_round\":" + str(round) + ",\"train_best\":" + tb_fmt(gBest) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight_frac\":" + tb_fmt(maxFF) + "}}")
+		flush()
+		if falls == 0 && minDist >= 10.0 && maxFF < 0.08 {
+			println("{\"status\":\"WALK GATE PASSED\",\"artifact\":\"ml/models/walker_slow.json\",\"rounds\":" + str(round + 1) + "}")
+			return
+		}
+		n = m
+		round = round + 1
+	}
+	println("{\"status\":\"walk gate not passed\"}")
+}
