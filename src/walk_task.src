@@ -86,9 +86,9 @@ func walk_episode_h(n, maxTicks, noiseSeed, assist) (ep) {
 	nz := 0.0
 	if noiseSeed > 0 {
 		nz = 0.01
-		// training seeds (>=3000) run HOTTER noise than the gate's +-1%:
-		// the walking basin must be wider than what is tested
-		if noiseSeed >= 3000 {
+		// gate-round training seeds (>=50000) run HOTTER noise than the
+		// gate's +-1%: the walking basin must be wider than what is tested
+		if noiseSeed >= 50000 {
 			nz = 0.015
 		}
 	}

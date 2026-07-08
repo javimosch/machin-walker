@@ -16,6 +16,13 @@
 // exploded to 50% on unseen ones)
 func h_score(n, maxTicks, seed, assist) (f) {
 	ep := walk_episode_h(n, maxTicks, seed, assist)
+	// distance credit CAPS at 12m (goal is 10): speed beyond the goal earns
+	// nothing, so the fast-but-flight-risky leaping attractor loses to
+	// careful walking (round 9: 40m on gate seeds, 58% flight — fitness
+	// itself was breeding the exploit)
+	if ep.dist > 12.0 {
+		ep.dist = 12.0
+	}
 	f = walk_ep_score(ep, maxTicks)
 	if float(ep.flight) > 0.04 * float(maxTicks) {
 		f = 0.25 * ep.dist
