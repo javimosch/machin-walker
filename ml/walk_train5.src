@@ -14,22 +14,36 @@
 // the 8% gate cap, so passing training implies margin at the gate (the
 // step-timing policy previously tuned itself to 7.9% on seen seeds and
 // exploded to 50% on unseen ones)
+// training score: distance credit caps at 12m, and the flight penalty is a
+// SLOPE, not a cliff — full credit at <=4% airborne, linear decay to a 0.25x
+// floor by ~16.5%. The hard-cap version pinned entire populations at the
+// salvage value (everyone leaps -> identical scores -> selection drifts);
+// a slope makes every percentage point of flight reduction pay.
 func h_score(n, maxTicks, seed, assist) (f) {
 	ep := walk_episode_h(n, maxTicks, seed, assist)
-	// distance credit CAPS at 12m (goal is 10): speed beyond the goal earns
-	// nothing, so the fast-but-flight-risky leaping attractor loses to
-	// careful walking (round 9: 40m on gate seeds, 58% flight — fitness
-	// itself was breeding the exploit)
 	if ep.dist > 12.0 {
 		ep.dist = 12.0
 	}
-	f = walk_ep_score(ep, maxTicks)
 	tk := float(ep.ticks)
 	if tk < 1.0 {
 		tk = 1.0
 	}
-	if float(ep.flight) > 0.04 * tk {
+	if ep.fell {
 		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * ep.lowhip / tk
+	ff := float(ep.flight) / tk
+	mult := 1.0
+	if ff > 0.04 {
+		mult = 1.0 - 6.0 * (ff - 0.04)
+		if mult < 0.25 {
+			mult = 0.25
+		}
+	}
+	if f > 0.0 {
+		f = f * mult
 	}
 }
 
