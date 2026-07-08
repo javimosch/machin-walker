@@ -113,7 +113,9 @@ func walk3_arm_swing(b) {
 	w3_set_joint_target(b.w, b.jElbR, 0.35)
 }
 
-// harness for the 3D curriculum: supports pitch AND roll
+// harness for the 3D curriculum: supports EVERY unstable DOF — pitch, roll
+// AND yaw (in 2D the harness covered the only unstable axis; leaving yaw
+// naked here while penalizing it stalled round 0 at 0.12)
 func walk3_harness(b, k) {
 	if k <= 0.0 {
 		return
@@ -124,6 +126,22 @@ func walk3_harness(b, k) {
 	b.w.px[b.head] = b.w.px[b.head] + k * 0.045 * dx
 	b.w.pz[b.chest] = b.w.pz[b.chest] + k * 0.03 * dz
 	b.w.pz[b.head] = b.w.pz[b.head] + k * 0.045 * dz
+	// yaw support: rotate the hip axis toward its neutral bearing about the
+	// pelvis center (x-z plane)
+	y := biped3_yaw(b)
+	cxm := (b.w.px[b.hipL] + b.w.px[b.hipR]) * 0.5
+	czm := (b.w.pz[b.hipL] + b.w.pz[b.hipR]) * 0.5
+	da := 0.0 - k * 0.05 * y
+	s := sin(da)
+	c := sin(da + pi() / 2.0)
+	rlx := b.w.px[b.hipL] - cxm
+	rlz := b.w.pz[b.hipL] - czm
+	b.w.px[b.hipL] = cxm + rlx * c - rlz * s
+	b.w.pz[b.hipL] = czm + rlx * s + rlz * c
+	rrx := b.w.px[b.hipR] - cxm
+	rrz := b.w.pz[b.hipR] - czm
+	b.w.px[b.hipR] = cxm + rrx * c - rrz * s
+	b.w.pz[b.hipR] = czm + rrx * s + rrz * c
 }
 
 type Walk3Ep struct {
@@ -205,7 +223,6 @@ func walk3_ep_score(ep, maxTicks) (f) {
 	f = f - 2.0 * float(ep.flight) / tk
 	f = f - 2.0 * ep.lowhip / tk
 	f = f - 0.5 * ep.drift
-	// heading discipline: walking +x means keeping your heading; a full spin
-	// scores like a fall
-	f = f - 1.5 * ep.maxyaw
+	// heading discipline: walking +x means keeping your heading
+	f = f - 0.6 * ep.maxyaw
 }

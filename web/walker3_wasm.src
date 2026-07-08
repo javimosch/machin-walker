@@ -1,0 +1,110 @@
+// machin-walker — web/walker3_wasm.src
+// Browser build of the FULL-3D biped (lateral balance milestone): same
+// pbd3/body3/walk3 modules compiled to wasm; the host polls true (x,y,z)
+// particle positions — no render-time z offsets, the depth is simulated.
+// Build: web/build.sh (walker3 section) -> docs/
+
+var g3_net = Net{}
+var g3_b = Biped3{}
+var g3_t = 0
+var g3_ph = 0.0
+var g3_x0 = 0.0
+var g3_booted = 0
+
+export func buf3(n) (p) {
+	p = alloc(n + 1)
+}
+
+export func boot3(p) (ok) {
+	src := ptr_str(p)
+	free(p)
+	g3_net = parse(src, Net{})
+	ok = 0
+	if g3_net.tinybrain != 1 {
+		return
+	}
+	g3_b = biped3_new()
+	g3_x0 = g3_b.w.px[g3_b.hip]
+	g3_t = 0
+	g3_ph = 0.0
+	g3_booted = 1
+	ok = 1
+}
+
+export func restart3() {
+	g3_b = biped3_new()
+	g3_x0 = g3_b.w.px[g3_b.hip]
+	g3_t = 0
+	g3_ph = 0.0
+}
+
+export func tick3() {
+	if g3_booted == 0 {
+		return
+	}
+	if biped3_fallen(g3_b) {
+		g3_t = g3_t + 1
+		if g3_t % 90 == 0 {
+			restart3()
+		}
+		return
+	}
+	cl := biped3_contact(g3_b, g3_b.toeL, g3_b.heelIL, g3_b.heelOL)
+	cr := biped3_contact(g3_b, g3_b.toeR, g3_b.heelIR, g3_b.heelOR)
+	outL := net_forward(g3_net, walk3_inputs(g3_b, g3_ph, 1.0, g3_b.jHipL, g3_b.jKneeL, g3_b.jAnkL, g3_b.jHipFL, g3_b.jAnkFL, g3_b.jHipR, cl, cr, 0.0, 0, 0))
+	outR := net_forward(g3_net, walk3_inputs(g3_b, g3_ph + pi(), -1.0, g3_b.jHipR, g3_b.jKneeR, g3_b.jAnkR, g3_b.jHipFR, g3_b.jAnkFR, g3_b.jHipL, cr, cl, 0.0, 0, 0))
+	walk3_apply(g3_b, outL, 1.0, g3_b.jHipL, g3_b.jKneeL, g3_b.jAnkL, g3_b.jHipFL, g3_b.jAnkFL)
+	walk3_apply(g3_b, outR, -1.0, g3_b.jHipR, g3_b.jKneeR, g3_b.jAnkR, g3_b.jHipFR, g3_b.jAnkFR)
+	rate := 1.0 + 0.125 * (outL[5] + outR[5])
+	if rate < 0.8 {
+		rate = 0.8
+	}
+	if rate > 1.3 {
+		rate = 1.3
+	}
+	g3_ph = g3_ph + 2.0 * pi() * walk3_hz() * walk3_dt() * rate
+	walk3_arm_swing(g3_b)
+	biped3_step(g3_b, walk3_dt())
+	g3_t = g3_t + 1
+}
+
+// creation order: hip hipL hipR chest head | kneeL ankleL toeL heelIL heelOL |
+// kneeR ankleR toeR heelIR heelOR | elbowL handL elbowR handR
+export func p3x(i) (v) {
+	v = g3_b.w.px[i]
+}
+
+export func p3y(i) (v) {
+	v = g3_b.w.py[i]
+}
+
+export func p3z(i) (v) {
+	v = g3_b.w.pz[i]
+}
+
+export func w3_dist() (v) {
+	v = g3_b.w.px[g3_b.hip] - g3_x0
+}
+
+export func w3_speed() (v) {
+	v = biped3_vx(g3_b, walk3_dt())
+}
+
+export func w3_drift() (v) {
+	v = g3_b.w.pz[g3_b.hip]
+}
+
+export func w3_yaw() (v) {
+	v = biped3_yaw(g3_b)
+}
+
+export func w3_fell() (v) {
+	v = 0
+	if biped3_fallen(g3_b) {
+		v = 1
+	}
+}
+
+export func w3_t() (v) {
+	v = float(g3_t) * walk3_dt()
+}
