@@ -49,6 +49,14 @@ func main() {
 		println("{\"error\":\"need the gated 13-in/4-out 2D champion at ml/models/walker.json first\"}")
 		exit(1)
 	}
+	// curriculum resume tier: a saved harness champion skips the distill
+	prevH := net_load("ml/models/walker3_h.json")
+	if prevH.tinybrain == 1 && prevH.topology[0] == 20 {
+		println("{\"resume_from\":\"ml/models/walker3_h.json (curriculum)\"}")
+		flush()
+		walk3_curriculum(prevH, maxTicks)
+		return
+	}
 	tb_seed(42)
 	n := net_new([]int{20, 22, 6}, []string{"tanh", "tanh"}, 42)
 	ds := Dataset{}
@@ -126,7 +134,10 @@ func main() {
 	loss := net_train_sgd(n, ds, 200, 0.02)
 	println("{\"phase\":\"distill\",\"mse\":" + tb_fmt(loss) + ",\"seed_fitness\":" + tb_fmt(w3fit(n, maxTicks, 900, 0.5)) + "}")
 	flush()
+	walk3_curriculum(n, maxTicks)
+}
 
+func walk3_curriculum(n, maxTicks) {
 	// ── 2. ADAPTIVE harness curriculum: descend to the next assist level
 	// only when the current one is mastered (train_best >= bar), up to 4
 	// attempts per level with fresh seeds each attempt. A fixed schedule
@@ -156,11 +167,21 @@ func main() {
 		cfg.workers = 6
 		cfg.target_fitness = 11.0
 		cfg.print_every = 0
-		res, champ := evolve_run(n, fit, cfg)
-		net_save(champ, "ml/models/walker3_h.json")
+		// evolve_run's population arrays would otherwise accumulate in the
+		// main goroutine's never-reclaimed arena across the curriculum's many
+		// calls (~350MB/attempt measured): run it inside an arena with the
+		// SAVED FILE as the boundary, reload outside
+		bestF := 0.0
+		gensRan := 0
+		arena {
+			res, champ := evolve_run(n, fit, cfg)
+			net_save(champ, "ml/models/walker3_h.json")
+			bestF = res.best_fitness
+			gensRan = res.generations
+		}
 		n = net_load("ml/models/walker3_h.json")
 		dep := walk3_episode_h(n, maxTicks, base + 99, a)
-		println("{\"harness3_level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"maxyaw_deg\":" + tb_fmt(dep.maxyaw * 57.3) + ",\"fell\":" + str(dep.fell) + "}}")
+		println("{\"harness3_level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"assist\":" + tb_fmt(a) + ",\"train_best\":" + tb_fmt(bestF) + ",\"gens\":" + str(gensRan) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"maxyaw_deg\":" + tb_fmt(dep.maxyaw * 57.3) + ",\"fell\":" + str(dep.fell) + "}}")
 		flush()
 		seedTick = seedTick + 1
 		// mastery = the fresh-seed DIAGNOSTIC at this assist level (no fall,
@@ -192,11 +213,17 @@ func main() {
 		cfg.workers = 6
 		cfg.target_fitness = 12.0
 		cfg.print_every = 0
-		res, champ := evolve_run(n, fit, cfg)
-		net_save(champ, "ml/models/walker3.json")
+		gBest := 0.0
+		gGens := 0
+		arena {
+			res, champ := evolve_run(n, fit, cfg)
+			net_save(champ, "ml/models/walker3.json")
+			gBest = res.best_fitness
+			gGens = res.generations
+		}
 		m := net_load("ml/models/walker3.json")
 		minDist, falls, maxFlight, maxDrift := w3gate(m, maxTicks)
-		println("{\"gate3_round\":" + str(round) + ",\"train_best\":" + tb_fmt(res.best_fitness) + ",\"gens\":" + str(res.generations) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight\":" + str(maxFlight) + ",\"max_drift\":" + tb_fmt(maxDrift) + "}}")
+		println("{\"gate3_round\":" + str(round) + ",\"train_best\":" + tb_fmt(gBest) + ",\"gens\":" + str(gGens) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight\":" + str(maxFlight) + ",\"max_drift\":" + tb_fmt(maxDrift) + "}}")
 		flush()
 		if falls == 0 && minDist >= 10.0 {
 			println("{\"status\":\"3D GATE PASSED\",\"artifact\":\"ml/models/walker3.json\",\"rounds\":" + str(round + 1) + "}")
