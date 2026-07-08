@@ -182,7 +182,10 @@ func walk_gate_rounds(n, maxTicks) {
 		cfg.mut_sigma = 0.06
 		cfg.warm_start = true
 		cfg.workers = 6
-		cfg.target_fitness = 12.0
+		// NO early stop: a knife-edge genome that passes 4 seeds at gen 1
+		// must not end the round — the only exit is the reloaded-artifact
+		// gate below
+		cfg.target_fitness = 0.0
 		cfg.print_every = 0
 		res, champ := evolve_run(n, fit, cfg)
 		net_save(champ, "ml/models/walker_robust.json")
