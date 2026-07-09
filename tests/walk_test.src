@@ -58,6 +58,36 @@ func main() {
 	check("5 held-out noise seeds: all >= 10m (min " + str(minD) + "m)", minD >= 10.0)
 	check("5 held-out noise seeds: zero falls", falls == 0)
 
+	// ── the STRICT WALK gate: ml/models/walker_slow.json at 0.62 Hz ──
+	println("=== the strict-walk gate: ml/models/walker_slow.json ===")
+	g_hz = 0.62
+	ws := net_load("ml/models/walker_slow.json")
+	check("walk artifact loads", ws.tinybrain == 1 && ws.topology[0] == 13 && ws.topology[2] == 4)
+	wminD := 1000000.0
+	wfalls := 0
+	wmaxFF := 0.0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		e := walk_episode(ws, 1800, sd)
+		if e.dist < wminD {
+			wminD = e.dist
+		}
+		if e.fell {
+			wfalls = wfalls + 1
+		}
+		wtk := float(e.ticks)
+		if wtk < 1.0 {
+			wtk = 1.0
+		}
+		fr := float(e.flight) / wtk
+		if fr > wmaxFF {
+			wmaxFF = fr
+		}
+	}
+	check("walk: 5 held-out seeds all >= 10m (min " + str(wminD) + "m)", wminD >= 10.0)
+	check("walk: zero falls", wfalls == 0)
+	check("walk: STRICT — max flight fraction < 8% (got " + str(wmaxFF) + ")", wmaxFF < 0.08)
+	g_hz = 0.95
+
 	println("=== summary ===")
 	println("PASS " + str(g_pass) + "   FAIL " + str(g_fail))
 	if g_fail > 0 {

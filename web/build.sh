@@ -9,6 +9,7 @@ cat src/pbd.src src/body.src src/walk_task.src ml/vendor/tinybrain.src web/walke
 "$MACHIN" build /tmp/walker_wasm.mfl --target wasm -o docs/walker.wasm
 cp web/index.html docs/index.html
 cp ml/models/walker.json docs/walker.json
+cp ml/models/walker_slow.json docs/walker_slow.json
 if [ -f ml/models/walker3.json ]; then
   cat src/pbd3.src src/body3.src src/walk3_task.src ml/vendor/tinybrain.src web/walker3_wasm.src | "$MACHIN" encode /dev/stdin > /tmp/walker3_wasm.mfl
   "$MACHIN" build /tmp/walker3_wasm.mfl --target wasm -o docs/walker3.wasm

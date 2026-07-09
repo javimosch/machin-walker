@@ -94,12 +94,24 @@ func fmt2w(v) (s) {
 }
 
 func main() {
-	src := read_file("ml/models/walker.json")
+	// prefer the certified WALK artifact (trained at 0.62 Hz); fall back to
+	// the RUN artifact (0.95 Hz)
+	gaitName := "walk"
+	src := read_file("ml/models/walker_slow.json")
+	if len(src) > 0 {
+		g_hz = 0.62
+	} else {
+		src = read_file("ml/models/walker.json")
+		gaitName = "run"
+	}
 	if len(src) == 0 {
-		println("ml/models/walker.json missing — run ml/walk_train.src first")
+		println("no artifact — run ml/walk_train6.src first")
 		exit(1)
 	}
-	n := net_load("ml/models/walker.json")
+	n := parse(src, Net{})
+	if gaitName == "walk" {
+		println("viewing the WALK artifact at 0.62 Hz")
+	}
 	b := biped_new()
 	x0 := biped_hip_x(b)
 	InitWindow(1100, 700, "machin-walker - a tinybrain net learned to walk")

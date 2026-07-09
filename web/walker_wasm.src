@@ -15,6 +15,12 @@ export func buf(n) (p) {
 	p = alloc(n + 1)
 }
 
+// gait cadence in centihertz (the walk artifact was trained at 62, the run
+// artifact at 95 — cadence is part of the controller contract)
+export func set_hz(h) {
+	g_hz = float(h) / 100.0
+}
+
 export func boot(p) (ok) {
 	src := ptr_str(p)
 	free(p)

@@ -1,14 +1,16 @@
 # machin-walker
 
-**A human-shaped biped that *learned* to run.** A [tinybrain](https://github.com/javimosch/tinybrain) neural network (13 sensors → 16 → 4, one ~4.7 KB JSON artifact) drives six torque-limited joints — *and its own gait clock* — of a 1.75 m / 70 kg humanoid through a rigorous pure-[machin](https://github.com/javimosch/machin) physics simulation. The certified artifact covers **12.5 m at 1.3–1.5 m/s with zero falls on every noise seed never seen in training**, in a natural flight-phase running gait with human-flexing knees and counter-swinging arms.
+**A human-shaped biped that *learned to walk — and to run*.** A [tinybrain](https://github.com/javimosch/tinybrain) neural network (13 sensors → 16 → 4, one ~4.7 KB JSON artifact) drives six torque-limited joints — *and its own gait clock* — of a 1.75 m / 70 kg humanoid through a rigorous pure-[machin](https://github.com/javimosch/machin) physics simulation. Two certified artifacts, one controller architecture: a strict **walk** (`walker_slow.json`, 0.62 Hz — 12.5 m at ~0.54 m/s, 44 % double-support, under 8 % airborne) and a **run** (`walker.json`, 0.95 Hz — 12.5 m at 1.3–1.5 m/s, flight-phase). Both: **zero falls on every noise seed never seen in training**, human-flexing knees, counter-swinging arms.
 
 **[▶ watch it run in your browser](https://javimosch.github.io/machin-walker/)** — the physics runs in wasm; JS only draws.
 
 This is the "how machin could make robots walk" demo: everything a real robot controller is allowed — and nothing it isn't.
 
-## Run vs. walk — the honest framing
+## Walk vs. run — how cadence decided everything
 
-The challenge was "walk 10m". What evolution found is a **run** (~45–55% of each stride airborne, like human running; walking means a foot always planted). We certified the run honestly rather than relabeling it: the gate demands ≥10 m, zero falls, on 5 held-out noise seeds, evaluated on the *saved and reloaded* artifact — but it does **not** constrain flight. A strict low-flight **walk remains the open milestone**: two 1440-cell scans prove no open-loop human-knee gait exists in this sim (feedback is required from step one), and every fitness shape we tried for flight suppression either pinned populations at salvage scores (cliffs) or flattened at the floor (bounded slopes). The full negative-result log is in the commit history — it's the most instructive part of the repo.
+At 0.95 Hz, evolution found a **run** and no fitness shape could suppress the flight (cliffs pinned populations at identical salvage scores; bounded slopes flattened at their floor; the walk basin was unreachable from the run basin by small mutations). The strict walk fell almost immediately once the *cadence* changed: at **0.62 Hz** the same pipeline — CPG prior, clone, harness curriculum, gated rounds — produced a grounded walking gait in its very first curriculum level and passed the strict gate (<8 % flight, ≥10 m, zero falls, 5 held-out seeds, reloaded artifact) in two gate rounds. The lesson generalizes: when evolution keeps finding the "wrong" gait, the fitness isn't wrong — the *tempo* is.
+
+**Full 3D lateral balance remains open, with the boundary honestly mapped**: at running speed it exceeded this net size + GA budget (the twist problem was solved along the way — see the `pbd3` bearing-alignment constraint — but the final gate champions degenerated into standing statues). The slow walker above is the designated teacher for the next 3D attempt: wide stability margins at 0.54 m/s are exactly what lateral learning needs.
 
 ## The physics contract (enforced by tests)
 
@@ -51,13 +53,16 @@ Training runs on a 14-core box via tinybrain's parallel evolution (`cfg.workers`
 
 `ml/walk_train5.src` retrains end-to-end on a many-core box; `ml/walk3_train.src` is the staged 3D lateral-balance pipeline (distills this artifact as its teacher).
 
-## Certified numbers (committed artifact, `ml/models/walker.json`)
+## Certified numbers (committed artifacts)
 
-- Noise-free: 12.5 m in 8.6 s (1.46 m/s), upright, zero falls, knees flexing human-way.
-- 5 gate seeds (never trained on): min 12.51 m, **zero falls**.
-- Gait: flight fraction 42–53 % (a run); cadence self-modulated around 0.95 Hz.
+**Walk** (`ml/models/walker_slow.json`, 0.62 Hz):
+- 8/8 probe seeds (5 gate + 3 extra): all 12.5 m, **zero falls**, flight 5.9–8.2 %, ~0.54 m/s.
+- Gait shape: 51 % single-support / **44 % double-support** / 6 % flight — definitionally walking.
+
+**Run** (`ml/models/walker.json`, 0.95 Hz):
+- Noise-free: 12.5 m at 1.46 m/s, upright, zero falls; 5 gate seeds: min 12.51 m, zero falls.
+- Gait: flight 42–53 % — honest running.
 
 ## Open milestones
 
-- **Strict walk** (<8 % flight) — the fitness-design notes above are the map.
-- **Lateral balance** (full 3D) — physics + rig + trainer staged; launches next.
+- **Lateral balance** (full 3D) — physics, rig, trainer and landing kit all staged; the boundary at running speed is mapped, and the slow walker is the designated teacher for the next attempt.

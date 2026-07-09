@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>machin-walker — a tiny neural net learned to run</title>
+<title>machin-walker — a tiny neural net learned to walk (and run)</title>
 <style>
   body { margin: 0; background: #14161a; color: #eaeaea; font: 15px/1.5 system-ui, sans-serif;
          display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 12px; }
@@ -21,9 +21,14 @@
 one ~4.7&nbsp;KB JSON artifact) drives six torque-limited joints — and its own gait clock — of a
 1.75&nbsp;m / 70&nbsp;kg biped through a rigorous pure-<a href="https://github.com/javimosch/machin">machin</a>
 physics simulation, compiled to WebAssembly. Internal joint torques only — no balance assist, no
-velocity caps, momentum-conserving motors, Coulomb friction. It learned to <b>run</b> (a flight-phase
-gait at ~1.5&nbsp;m/s, zero falls on noise seeds never seen in training); a strict low-flight
-<i>walk</i> is the declared open milestone. The physics below runs in your browser; JS only draws.</p>
+velocity caps, momentum-conserving motors, Coulomb friction. It learned <b>two certified gaits</b>: a strict
+<b>walk</b> (0.54&nbsp;m/s, 44% double-support, under 8% airborne) and a <b>run</b> (~1.5&nbsp;m/s,
+flight-phase) — each with zero falls on noise seeds never seen in training. Toggle below.
+The physics runs in your browser; JS only draws.</p>
+<div style="display:flex;gap:10px">
+  <button id="bwalk" style="padding:6px 22px;border-radius:6px;border:1px solid #4a5568;background:#2b6c3f;color:#fff;cursor:pointer">walk</button>
+  <button id="brun" style="padding:6px 22px;border-radius:6px;border:1px solid #4a5568;background:#232a36;color:#cbd5e0;cursor:pointer">run</button>
+</div>
 <canvas id="cv" width="1100" height="700"></canvas>
 <div id="status">loading…</div>
 <p class="facts">Learned by neuroevolution with a curriculum: an open-loop gait prior is SGD-cloned into
@@ -40,17 +45,30 @@ const HIP=0, CHEST=1, HEAD=2, KNL=3, ANL=4, TOL=5, HEL=6, KNR=7, ANR=8, TOR=9, H
 
 try {
   const stub = new Proxy({}, { get: () => () => 0 });
-  const [wasmResp, artifact] = await Promise.all([
-    fetch('walker.wasm'), (await fetch('walker.json')).text()
+  const [wasmResp, runArt, walkArt] = await Promise.all([
+    fetch('walker.wasm'), (await fetch('walker.json')).text(), (await fetch('walker_slow.json')).text()
   ]);
   const { instance } = await WebAssembly.instantiate(await wasmResp.arrayBuffer(),
     { wasi_snapshot_preview1: stub, env: stub });
   const ex = instance.exports;
   ex._initialize?.();
-  const bytes = new TextEncoder().encode(artifact);
-  const p = ex.buf(BigInt(bytes.length));
-  new Uint8Array(ex.memory.buffer).set(bytes, Number(p));
-  if (ex.boot(p) !== 1n) throw new Error('artifact rejected');
+  function bootGait(artifact, hz100) {
+    const bytes = new TextEncoder().encode(artifact);
+    const p = ex.buf(BigInt(bytes.length));
+    new Uint8Array(ex.memory.buffer).set(bytes, Number(p));
+    ex.set_hz(BigInt(hz100));
+    if (ex.boot(p) !== 1n) throw new Error('artifact rejected');
+  }
+  bootGait(walkArt, 62);
+  const bw = document.getElementById('bwalk'), br = document.getElementById('brun');
+  function sel(which) {
+    bw.style.background = which === 'walk' ? '#2b6c3f' : '#232a36';
+    bw.style.color = which === 'walk' ? '#fff' : '#cbd5e0';
+    br.style.background = which === 'run' ? '#2b6c3f' : '#232a36';
+    br.style.color = which === 'run' ? '#fff' : '#cbd5e0';
+  }
+  bw.onclick = () => { bootGait(walkArt, 62); sel('walk'); };
+  br.onclick = () => { bootGait(runArt, 95); sel('run'); };
 
   // tiny 3D camera: look-at + perspective, matching the native viewer
   function project(px, py, pz, cam) {
