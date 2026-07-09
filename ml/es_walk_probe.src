@@ -1,0 +1,241 @@
+// ml/es_walk_probe.src — VALIDATE the ES trainer (tinybrain es_run) on the
+// already-solved 2D WALK (0.62 Hz). Same curriculum + gate + fitness as
+// walk_train6 (the GA run that took ~4.5 h at 6 workers), but each level is
+// trained by es_run instead of evolve_run, on 10 workers. Success = reach the
+// strict walk gate (>=10m, 0 falls, <8% flight on 5 unseen seeds) in >=2x less
+// wall-clock. Writes STATUS.json each round (elapsed/mean/ETA) for a
+// non-blocking, human-pingable check.
+//
+// Flip GAIT_HZ to 0.95 (and drop the flight cap in the gate) to also validate
+// the run; the walk is the headline check + the 3D teacher.
+
+func GAIT_HZ() (v) { v = 0.62 }
+func ROUND_BUDGET() (v) { v = 46 }   // 36 curriculum + 10 gate, for the ETA
+
+// wall-clock start, a package global so status_write can read it
+var g_t0 = 0
+
+func status_write(phase, roundNo, best, roundsDone, extra) {
+	elapsed := float(now_ms() - g_t0) / 1000.0
+	mean := elapsed
+	if roundsDone > 0 {
+		mean = elapsed / float(roundsDone)
+	}
+	rem := ROUND_BUDGET() - roundsDone
+	if rem < 0 {
+		rem = 0
+	}
+	eta := mean * float(rem)
+	s := "{\"phase\":\"" + phase + "\",\"round\":" + str(roundNo) + ",\"best\":" + tb_fmt(best) + ",\"elapsed_s\":" + tb_fmt(elapsed) + ",\"mean_round_s\":" + tb_fmt(mean) + ",\"eta_remaining_s\":" + tb_fmt(eta) + "," + extra + "}"
+	write_file("STATUS.json", s)
+	println(s)
+	flush()
+}
+
+func esw_score(n, maxTicks, seed, assist) (f) {
+	ep := walk_episode_h(n, maxTicks, seed, assist)
+	if ep.dist > 12.0 {
+		ep.dist = 12.0
+	}
+	tk := float(ep.ticks)
+	if tk < 1.0 {
+		tk = 1.0
+	}
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * ep.lowhip / tk
+	ff := float(ep.flight) / tk
+	if ff > 0.04 {
+		if f > 0.0 {
+			f = f / (1.0 + 10.0 * (ff - 0.04))
+		}
+	}
+}
+
+func esw_fit(n, maxTicks, base, assist) (f) {
+	s1 := esw_score(n, maxTicks, base, assist)
+	s2 := esw_score(n, maxTicks, base + 61, assist)
+	z := esw_score(n, maxTicks, base + 34, 0.0)
+	z2 := esw_score(n, maxTicks, base + 51, 0.0)
+	if z2 < z {
+		z = z2
+	}
+	z3 := esw_score(n, maxTicks, base + 68, 0.0)
+	if z3 < z {
+		z = z3
+	}
+	f = (s1 + s2 + 2.0 * z) / 4.0
+}
+
+func esw_gate(n, maxTicks) (minDist, falls, maxFF) {
+	minDist = 1000000.0
+	falls = 0
+	maxFF = 0.0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := walk_episode(n, maxTicks, sd)
+		if ep.dist < minDist {
+			minDist = ep.dist
+		}
+		if ep.fell {
+			falls = falls + 1
+		}
+		tk := float(ep.ticks)
+		if tk < 1.0 {
+			tk = 1.0
+		}
+		fr := float(ep.flight) / tk
+		if fr > maxFF {
+			maxFF = fr
+		}
+	}
+}
+
+// ES config for one curriculum level
+func esw_cfg(base, hard) (cfg) {
+	cfg = evolve_cfg_default()
+	cfg.pop = 96
+	cfg.generations = 100
+	cfg.es_sigma = 0.08
+	cfg.es_lr = 0.03
+	if hard {
+		cfg.generations = 160
+		cfg.es_sigma = 0.05
+	}
+	cfg.warm_start = true
+	cfg.workers = 10
+	cfg.target_fitness = 0.0
+	cfg.print_every = 0
+}
+
+func main() {
+	g_hz = GAIT_HZ()
+	g_t0 = now_ms()
+	maxTicks := 1800
+
+	// resume tier
+	prevH := net_load("ml/models/es_walk_h.json")
+	if prevH.tinybrain == 1 && prevH.topology[0] == 13 && prevH.topology[2] == 4 {
+		status_write("resume", 0, 0.0, 0, "\"note\":\"from es_walk_h.json\"")
+		esw_curriculum(prevH, maxTicks, 0)
+		return
+	}
+
+	// gait prior at the target cadence + clone (identical bootstrap to GA)
+	tb_seed(42)
+	p, ps := cpg_search(1200, 800, maxTicks)
+	status_write("cpg", 0, ps, 0, "\"params\":" + tb_vec_json(p))
+	n := net_new([]int{13, 16, 4}, []string{"tanh", "tanh"}, 42)
+	ds := Dataset{}
+	i := 0
+	while i < 4000 {
+		ph := tb_randf_range(0.0, 2.0 * pi())
+		x := []float{}
+		x = append(x, sin(ph))
+		x = append(x, sin(ph + pi() / 2.0))
+		x = append(x, tb_randf_range(-0.4, 0.4))
+		x = append(x, tb_randf_range(-0.8, 0.8))
+		x = append(x, tb_randf_range(-0.6, 0.3))
+		x = append(x, tb_randf_range(-0.3, 0.8))
+		x = append(x, tb_randf_range(-0.6, 0.6))
+		x = append(x, tb_randf_range(-1.0, 1.2))
+		x = append(x, tb_randf_range(-1.8, 0.0))
+		x = append(x, tb_randf_range(-0.7, 0.7))
+		x = append(x, tb_randf_range(-1.0, 1.2))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		y := []float{}
+		y = append(y, cpg_hip(p, ph) / 1.1)
+		y = append(y, cpg_knee(p, ph) / 0.8 + 1.0)
+		y = append(y, cpg_ank(p, ph) / 0.5)
+		y = append(y, 0.0)
+		ds.x = append(ds.x, x)
+		ds.y = append(ds.y, y)
+		i = i + 1
+	}
+	loss := net_train_sgd(n, ds, 200, 0.02)
+	status_write("clone", 0, 0.0 - loss, 0, "\"mse\":" + tb_fmt(loss))
+	esw_curriculum(n, maxTicks, 0)
+}
+
+func esw_curriculum(n, maxTicks, startRound) {
+	assists := []float{0.8, 0.5, 0.32, 0.2, 0.13, 0.08, 0.05, 0.03, 0.018, 0.01, 0.005, 0.0}
+	r := 0
+	attempt := 0
+	seedTick := 0
+	totalRounds := startRound
+	while r < len(assists) {
+		a := assists[r]
+		base := 3000 + seedTick * 500
+		fit := func(nn) {
+			return esw_fit(nn, maxTicks, base, a)
+		}
+		cfg := esw_cfg(base, a < 0.1)
+		bestF := 0.0
+		arena {
+			res, champ := es_run(n, fit, cfg)
+			net_save(champ, "ml/models/es_walk_try.json")
+			bestF = res.best_fitness
+		}
+		n = net_load("ml/models/es_walk_try.json")
+		dep := walk_episode_h(n, maxTicks, base + 99, a)
+		tk := float(dep.ticks)
+		if tk < 1.0 {
+			tk = 1.0
+		}
+		totalRounds = totalRounds + 1
+		status_write("curriculum", totalRounds, bestF, totalRounds, "\"level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"assist\":" + tb_fmt(a) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"flight_frac\":" + tb_fmt(float(dep.flight) / tk) + ",\"fell\":" + str(dep.fell) + "}")
+		seedTick = seedTick + 1
+		if totalRounds - startRound > 36 {
+			status_write("curriculum", totalRounds, bestF, totalRounds, "\"note\":\"budget exhausted\"")
+			break
+		}
+		if dep.fell == false && dep.dist >= 8.0 && float(dep.flight) < 0.10 * tk {
+			net_save(n, "ml/models/es_walk_h.json")
+			r = r + 1
+			attempt = 0
+		} else {
+			attempt = attempt + 1
+			if attempt > 5 {
+				attempt = 0
+				prev := net_load("ml/models/es_walk_h.json")
+				if prev.tinybrain == 1 {
+					n = prev
+				}
+				if r > 0 {
+					r = r - 1
+				}
+			}
+		}
+	}
+
+	// gate rounds
+	round := 0
+	while round < 10 {
+		base := 50000 + round * 1000
+		fit := func(nn) {
+			return esw_fit(nn, maxTicks, base, 0.0)
+		}
+		cfg := esw_cfg(base, true)
+		cfg.generations = 200
+		gBest := 0.0
+		arena {
+			res, champ := es_run(n, fit, cfg)
+			net_save(champ, "ml/models/es_walk.json")
+			gBest = res.best_fitness
+		}
+		m := net_load("ml/models/es_walk.json")
+		minDist, falls, maxFF := esw_gate(m, maxTicks)
+		totalRounds = totalRounds + 1
+		status_write("gate", totalRounds, gBest, totalRounds, "\"gate_round\":" + str(round) + ",\"gate\":{\"min_dist\":" + tb_fmt(minDist) + ",\"falls\":" + str(falls) + ",\"max_flight_frac\":" + tb_fmt(maxFF) + "}")
+		if falls == 0 && minDist >= 10.0 && maxFF < 0.08 {
+			status_write("done", totalRounds, gBest, totalRounds, "\"status\":\"ES WALK GATE PASSED\",\"artifact\":\"ml/models/es_walk.json\"")
+			return
+		}
+		n = m
+		round = round + 1
+	}
+	status_write("done", totalRounds, 0.0, totalRounds, "\"status\":\"es walk gate not passed\"")
+}

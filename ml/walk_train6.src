@@ -144,7 +144,7 @@ func w6curriculum(n, maxTicks) {
 			cfg.mut_sigma = 0.08
 		}
 		cfg.warm_start = true
-		cfg.workers = 6
+		cfg.workers = 10
 		cfg.target_fitness = 0.0
 		cfg.print_every = 0
 		bestF := 0.0
@@ -202,7 +202,7 @@ func w6curriculum(n, maxTicks) {
 		cfg.mut_rate = 0.12
 		cfg.mut_sigma = 0.06
 		cfg.warm_start = true
-		cfg.workers = 6
+		cfg.workers = 10
 		cfg.target_fitness = 0.0
 		cfg.print_every = 0
 		gBest := 0.0

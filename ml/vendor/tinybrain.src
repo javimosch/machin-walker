@@ -1,4 +1,4 @@
-// VENDORED from https://github.com/javimosch/tinybrain @ 2bc88d5 — do not edit here
+// VENDORED from https://github.com/javimosch/tinybrain @ cf472e6 — do not edit here
 // tinybrain — train tiny neural networks in pure MFL, ship them as JSON artifacts.
 // M0: MLP + backprop (SGD), deterministic PRNG, artifact save/load, CSV loading.
 //

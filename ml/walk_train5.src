@@ -169,7 +169,7 @@ func walk_curriculum(n, maxTicks) {
 			cfg.mut_sigma = 0.08
 		}
 		cfg.warm_start = true
-		cfg.workers = 6
+		cfg.workers = 10
 		cfg.target_fitness = 11.0
 		cfg.print_every = 0
 		res, champ := evolve_run(n, fit, cfg)
@@ -202,7 +202,7 @@ func walk_gate_rounds(n, maxTicks) {
 		cfg.mut_rate = 0.12
 		cfg.mut_sigma = 0.06
 		cfg.warm_start = true
-		cfg.workers = 6
+		cfg.workers = 10
 		// NO early stop: a knife-edge genome that passes its seeds at gen 1
 		// must not end the round — the only exit is the reloaded-artifact
 		// gate below
