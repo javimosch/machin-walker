@@ -1,0 +1,168 @@
+// machin-walker — ml/sag3_train.src   (Test B, Stage A)
+// Train a NATIVE 3D sagittal walker: a [13,16,4] net (same sagittal I/O as the
+// 2D walker) evolved ON THE 3D RIG with the FRONTAL plane RAILED. The 2D policy
+// does not transfer (Test B: it walks backward + sags) because the 3D masses
+// differ — so we re-solve sagittal walking natively, then Stage B anneals the
+// rail off under an analytic lateral capture-point controller.
+// Build: machin encode src/pbd3.src src/body3.src ml/vendor/tinybrain.src ml/vendor/evolve.src ml/sag3_train.src > /tmp/s3.mfl && machin run /tmp/s3.mfl
+
+func s3_dt() (v) { v = 0.0166666 }
+func s3_hz() (v) { v = 0.62 }
+
+func s3_vx(b, dt) (v) { v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0) }
+func s3_vy(b, dt) (v) { v = (b.w.py[b.hip] - b.w.oy[b.hip]) / (dt / 6.0) }
+func s3_pitch_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	cvx := (b.w.px[b.chest] - b.w.ox[b.chest]) / sdt
+	hvx := (b.w.px[b.hip] - b.w.ox[b.hip]) / sdt
+	sl := b.w.py[b.chest] - b.w.py[b.hip]
+	if sl < 0.1 { sl = 0.1 }
+	r = (cvx - hvx) / sl
+}
+func s3_contact(b, toe, hi, ho) (c) {
+	c = 0
+	if b.w.contact[toe] == 1 || b.w.contact[hi] == 1 || b.w.contact[ho] == 1 { c = 1 }
+}
+func s3_noise(seed, t, i) (v) {
+	x := sin(float(seed) * 12.9898 + float(t) * 78.233 + float(i) * 37.719) * 43758.5453
+	v = (x - floor(x)) * 2.0 - 1.0
+}
+func s3_inputs(b, ph, jHipT, jKneeT, jAnkT, jHipO, cT, cO, nz, nseed, nt) (x) {
+	x = []float{}
+	x = append(x, sin(ph))
+	x = append(x, sin(ph + pi() / 2.0))
+	x = append(x, biped3_pitch(b))
+	x = append(x, s3_pitch_rate(b, s3_dt()) / 3.0)
+	x = append(x, (b.w.py[b.hip] - 0.96) * 4.0)
+	x = append(x, s3_vx(b, s3_dt()) / 2.0)
+	x = append(x, s3_vy(b, s3_dt()) / 1.5)
+	x = append(x, w3_joint_angle(b.w, jHipT))
+	x = append(x, w3_joint_angle(b.w, jKneeT))
+	x = append(x, w3_joint_angle(b.w, jAnkT))
+	x = append(x, w3_joint_angle(b.w, jHipO))
+	x = append(x, float(cT))
+	x = append(x, float(cO))
+	if nz > 0.0 {
+		i := 0
+		while i < len(x) {
+			x[i] = x[i] + nz * s3_noise(nseed, nt, i)
+			i = i + 1
+		}
+	}
+}
+func s3_apply(b, out, jHip, jKnee, jAnk) {
+	w3_set_joint_target(b.w, jHip, out[0] * 1.1)
+	w3_set_joint_target(b.w, jKnee, (out[1] - 1.0) * 0.8)
+	w3_set_joint_target(b.w, jAnk, out[2] * 0.5)
+}
+func s3_arm_swing(b) {
+	sl := 0.0 - 0.55 * w3_joint_angle(b.w, b.jHipL)
+	if sl > 0.9 { sl = 0.9 }
+	if sl < 0.0 - 0.9 { sl = 0.0 - 0.9 }
+	sr := 0.0 - 0.55 * w3_joint_angle(b.w, b.jHipR)
+	if sr > 0.9 { sr = 0.9 }
+	if sr < 0.0 - 0.9 { sr = 0.0 - 0.9 }
+	w3_set_joint_target(b.w, b.jShL, sl)
+	w3_set_joint_target(b.w, b.jShR, sr)
+	w3_set_joint_target(b.w, b.jElbL, 0.35)
+	w3_set_joint_target(b.w, b.jElbR, 0.35)
+}
+// rail: hold the frontal plane so training isolates the SAGITTAL gait
+func s3_rail(b) {
+	dx := b.w.px[b.hip] - b.w.px[b.chest]
+	dz := b.w.pz[b.hip] - b.w.pz[b.chest]
+	b.w.px[b.chest] = b.w.px[b.chest] + 0.03 * dx
+	b.w.px[b.head] = b.w.px[b.head] + 0.045 * dx
+	b.w.pz[b.chest] = b.w.pz[b.chest] + 0.05 * dz
+	b.w.pz[b.head] = b.w.pz[b.head] + 0.07 * dz
+	cz := 0.12 * b.w.pz[b.hip]
+	b.w.pz[b.hip] = b.w.pz[b.hip] - cz
+	b.w.oz[b.hip] = b.w.oz[b.hip] - cz
+	// also hold frontal joints level so they contribute nothing this stage
+	w3_set_joint_target(b.w, b.jHipFL, 0.0)
+	w3_set_joint_target(b.w, b.jHipFR, 0.0)
+	w3_set_joint_target(b.w, b.jAnkFL, 0.0)
+	w3_set_joint_target(b.w, b.jAnkFR, 0.0)
+}
+
+type S3Ep struct {
+	dist float
+	ticks int
+	fell bool
+	flight int
+	lowhip float
+}
+
+func s3_episode(net, maxTicks, noiseSeed) (ep) {
+	ep = S3Ep{dist: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	nz := 0.0
+	if noiseSeed > 0 { nz = 0.01 }
+	b := biped3_new()
+	dt := s3_dt()
+	x0 := b.w.px[b.hip]
+	ph := 0.0
+	t := 0
+	while t < maxTicks {
+		cl := s3_contact(b, b.toeL, b.heelIL, b.heelOL)
+		cr := s3_contact(b, b.toeR, b.heelIR, b.heelOR)
+		outL := net_forward(net, s3_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, nz, noiseSeed, t))
+		outR := net_forward(net, s3_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
+		s3_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+		s3_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		s3_arm_swing(b)
+		s3_rail(b)
+		rate := 1.0 + 0.125 * (outL[3] + outR[3])
+		if rate < 0.8 { rate = 0.8 }
+		if rate > 1.3 { rate = 1.3 }
+		ph = ph + 2.0 * pi() * s3_hz() * dt * rate
+		biped3_step(b, dt)
+		if s3_contact(b, b.toeL, b.heelIL, b.heelOL) + s3_contact(b, b.toeR, b.heelIR, b.heelOR) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := b.w.py[b.hip]
+		if h < 0.82 { ep.lowhip = ep.lowhip + (0.82 - h) }
+		t = t + 1
+		if biped3_fallen(b) { ep.fell = true  break }
+		if b.w.px[b.hip] - x0 > 12.5 { break }
+	}
+	ep.ticks = t
+	ep.dist = b.w.px[b.hip] - x0
+}
+
+func s3_ep_score(ep) (f) {
+	tk := float(ep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * float(ep.flight) / tk
+	f = f - 2.0 * ep.lowhip / tk
+	if float(ep.flight) > 0.08 * tk { f = 0.25 * ep.dist }
+}
+
+func s3_fitness(net) (f) {
+	e1 := s3_episode(net, 480, 101)
+	e2 := s3_episode(net, 480, 202)
+	f = (s3_ep_score(e1) + s3_ep_score(e2)) * 0.5
+}
+
+func main() {
+	n := net_new([]int{13, 16, 4}, []string{"tanh", "tanh"}, 42)
+	fit := func(nn) { return s3_fitness(nn) }
+	cfg := evolve_cfg_default()
+	cfg.pop = 96
+	cfg.generations = 500
+	cfg.workers = 10
+	cfg.target_fitness = 40.0
+	cfg.log_path = "ml/models/sag3.jsonl"
+	cfg.print_every = 10
+	t0 := now_ms()
+	res, champ := evolve_run(n, fit, cfg)
+	ms := now_ms() - t0
+	mkdir("ml/models")
+	net_save(champ, "ml/models/sag3.json")
+	e := s3_episode(champ, 900, 0)
+	println("{\"local_probe\":true,\"gens\":" + str(res.generations) + ",\"best_fitness\":" + tb_fmt(res.best_fitness) + ",\"train_ms\":" + str(ms) + ",\"champ_dist\":" + tb_fmt(e.dist) + ",\"champ_flight\":" + str(e.flight) + ",\"champ_fell\":" + str(e.fell) + ",\"champ_ticks\":" + str(e.ticks) + "}")
+}

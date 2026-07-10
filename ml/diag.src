@@ -1,0 +1,16 @@
+// diagnostic: does the search's returned `out` reproduce internally, and does
+// s3_cpg_episode give the same result for the same params across program runs?
+func main() {
+	out := []float{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+	g_s3_hz = 0.40
+	tb_seed(42)
+	bs := s3_cpg_search(300, 100, 480, out)
+	println("out: " + tb_fmt(out[0]) + " " + tb_fmt(out[1]) + " " + tb_fmt(out[2]) + " " + tb_fmt(out[3]) + " " + tb_fmt(out[4]) + " " + tb_fmt(out[5]))
+	println("bs(score@480 from search)=" + tb_fmt(bs))
+	e1 := s3_cpg_episode(out, 480)
+	println("re-eval out @480: flight=" + tb_fmt(float(e1.flight) / float(e1.ticks) * 100.0) + "% dist=" + tb_fmt(e1.dist) + " fell=" + str(e1.fell))
+	// now eval a HARDCODED copy of those same printed values (fresh slice)
+	hc := []float{0.380197907956, 0.0438317853, 0.0 - 0.773747524933, 1.195209302602, 0.261641536924, 0.417818562024}
+	e2 := s3_cpg_episode(hc, 480)
+	println("hardcoded copy @480: flight=" + tb_fmt(float(e2.flight) / float(e2.ticks) * 100.0) + "% dist=" + tb_fmt(e2.dist) + " fell=" + str(e2.fell))
+}

@@ -1,0 +1,81 @@
+// machin-walker — ml/sag3_train3.src   (Test B, Stage A v3 — the walk-basin seed)
+// v2 bounced (12.5m/71% flight): warm-start started in the bound basin because
+// the 0.62Hz CPG seed was 17% flight. The cadence sweep found that the heavier
+// 3D rig walks at 0.40Hz: the best seed there is only 5.8% flight (a genuine
+// low-flight forward shuffle). This run clones THAT seed and warm-start evolves
+// at 0.40Hz — starting IN the walk basin. The question: does it grow a real
+// <8%-flight WALK instead of drifting to a bounce?
+// Build: machin encode src/pbd3.src src/body3.src ml/vendor/tinybrain.src ml/vendor/evolve.src src/sag3.src ml/sag3_train3.src > /tmp/s3.mfl && machin run /tmp/s3.mfl
+
+func main() {
+	g_s3_hz = 0.40   // the cadence that walks on the 3D rig (sweep result)
+	maxTicks := 480
+
+	// the 0.40Hz low-flight seed found by ml/cadence_sweep.src (5.8% flight,
+	// forward, no fall) — a genuine walk-basin gait to clone from
+	p := []float{0.298606643867, 0.096641914009, 0.0 - 0.545727320176, 0.865991939169, 0.116676875836, 4.24961903675}
+	cep := s3_cpg_episode(p, 900)
+	tk := float(cep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	println("{\"phase\":\"cpg_seed\",\"hz\":0.40,\"dist\":" + tb_fmt(cep.dist) + ",\"flight_pct\":" + tb_fmt(float(cep.flight) / tk * 100.0) + ",\"fell\":" + str(cep.fell) + "}")
+	flush()
+
+	// clone the seed into the [13,16,4] net (phase real, other sensors random)
+	n := net_new([]int{13, 16, 4}, []string{"tanh", "tanh"}, 42)
+	ds := Dataset{}
+	i := 0
+	while i < 5000 {
+		ph := tb_randf_range(0.0, 2.0 * pi())
+		x := []float{}
+		x = append(x, sin(ph))
+		x = append(x, sin(ph + pi() / 2.0))
+		x = append(x, tb_randf_range(0.0 - 0.4, 0.4))
+		x = append(x, tb_randf_range(0.0 - 0.5, 0.5))
+		x = append(x, tb_randf_range(0.0 - 0.6, 0.3))
+		x = append(x, tb_randf_range(0.0 - 0.3, 0.8))
+		x = append(x, tb_randf_range(0.0 - 0.4, 0.4))
+		x = append(x, tb_randf_range(0.0 - 1.0, 1.2))
+		x = append(x, tb_randf_range(0.0 - 1.8, 0.0))
+		x = append(x, tb_randf_range(0.0 - 0.7, 0.7))
+		x = append(x, tb_randf_range(0.0 - 1.0, 1.2))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		x = append(x, float(int(tb_randf() * 2.0)))
+		y := []float{}
+		y = append(y, cpg_hip(p, ph) / 1.1)
+		y = append(y, cpg_knee(p, ph) / 0.8 + 1.0)
+		y = append(y, cpg_ank(p, ph) / 0.5)
+		y = append(y, 0.0)
+		ds.x = append(ds.x, x)
+		ds.y = append(ds.y, y)
+		i = i + 1
+	}
+	loss := net_train_sgd(n, ds, 200, 0.02)
+	ce := s3_episode(n, 900, 0)
+	tk2 := float(ce.ticks)
+	if tk2 < 1.0 { tk2 = 1.0 }
+	println("{\"phase\":\"clone\",\"mse\":" + tb_fmt(loss) + ",\"dist\":" + tb_fmt(ce.dist) + ",\"flight_pct\":" + tb_fmt(float(ce.flight) / tk2 * 100.0) + ",\"fell\":" + str(ce.fell) + "}")
+	flush()
+
+	// warm-start evolve at 0.40Hz — grow feedback on the low-flight gait
+	fit := func(nn) { return s3_fitness(nn) }
+	cfg := evolve_cfg_default()
+	cfg.pop = 96
+	cfg.generations = 12
+	cfg.elite = 8
+	cfg.mut_rate = 0.12
+	cfg.mut_sigma = 0.2
+	cfg.warm_start = true
+	cfg.workers = 4
+	cfg.target_fitness = 11.0
+	cfg.log_path = "ml/models/sag3_walk040.jsonl"
+	cfg.print_every = 10
+	t0 := now_ms()
+	res, champ := evolve_run(n, fit, cfg)
+	ms := now_ms() - t0
+	mkdir("ml/models")
+	net_save(champ, "ml/models/sag3_walk040.json")
+	e := s3_episode(champ, 900, 0)
+	tk3 := float(e.ticks)
+	if tk3 < 1.0 { tk3 = 1.0 }
+	println("{\"artifact\":\"ml/models/sag3_walk040.json\",\"train_ms\":" + str(ms) + ",\"generations\":" + str(res.generations) + ",\"best_fitness\":" + tb_fmt(res.best_fitness) + ",\"champion\":{\"dist_m\":" + tb_fmt(e.dist) + ",\"flight_pct\":" + tb_fmt(float(e.flight) / tk3 * 100.0) + ",\"fell\":" + str(e.fell) + ",\"ticks\":" + str(e.ticks) + "}}")
+}

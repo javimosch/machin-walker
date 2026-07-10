@@ -1,0 +1,43 @@
+// machin-walker — ml/cadence_sweep.src   (Test B, Stage A: seed hunt)
+// The Stage-A v2 run bounced (12.5m at 71% flight) because the CPG seed on the
+// 3D rig isn't a true walk — warm-start started in the bound basin. In 2D the
+// unlock was CADENCE (0.62Hz walked where 0.95Hz bounded). The heavier 3D rig
+// (widened pelvis + tripod feet) likely wants slower. Sweep the cadence and, at
+// each, run the constrained low-flight CPG search — report the best seed's
+// FLIGHT FRACTION. We want a cadence whose best seed is a <8%-flight forward
+// walk (so warm-start starts IN the walk basin). Single-threaded + arena-safe.
+// Build: machin encode src/pbd3.src src/body3.src ml/vendor/tinybrain.src ml/vendor/evolve.src src/sag3.src ml/cadence_sweep.src > /tmp/cs.mfl && machin run /tmp/cs.mfl
+
+func sweep_one(hz, samples, refines, maxTicks) {
+	g_s3_hz = hz
+	best := []float{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+	bs := s3_cpg_search(samples, refines, maxTicks, best)
+	ep := s3_cpg_episode(best, 900)
+	tk := float(ep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	ff := float(ep.flight) / tk
+	mark := "  "
+	if ff <= 0.08 && ep.fell == false && ep.dist > 1.5 { mark = "<< WALK" }
+	println("hz=" + tb_fmt(hz) + "  score=" + tb_fmt(bs) + "  dist=" + tb_fmt(ep.dist) + "  flight=" + tb_fmt(ff * 100.0) + "%  fell=" + str(ep.fell) + "  ticks=" + str(ep.ticks) + "  params=" + tb_vec_json(best) + mark)
+	flush()
+}
+
+// verify the returned best reproduces its reported flight (catches the arena
+// aliasing bug: re-eval the PRINTED params in isolation)
+func verify_one(hz, params) {
+	g_s3_hz = hz
+	ep := s3_cpg_episode(params, 900)
+	tk := float(ep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	println("  verify hz=" + tb_fmt(hz) + " -> dist=" + tb_fmt(ep.dist) + " flight=" + tb_fmt(float(ep.flight) / tk * 100.0) + "%")
+}
+
+func main() {
+	println("=== cadence sweep (arena-fixed): hunting a <8%-flight 3D walk seed ===")
+	tb_seed(42)
+	sweep_one(0.35, 500, 200, 480)
+	sweep_one(0.40, 500, 200, 480)
+	sweep_one(0.45, 500, 200, 480)
+	sweep_one(0.50, 500, 200, 480)
+	sweep_one(0.55, 500, 200, 480)
+}

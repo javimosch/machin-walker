@@ -1,0 +1,114 @@
+// machin-walker — ml/lat_spike.src   (3D lateral-balance SPIKE, headless)
+// The decisive first test for the fresh angle: does an ANALYTIC frontal-plane
+// controller give the biped real lateral authority — reject a sideways shove
+// the passive body cannot? Two loops, both analytic (no net, no evolution):
+//   (1) lateral-CoM PD  -> antisymmetric hip ab/adduction + ankle inversion
+//                          (keep the CoM over the feet)
+//   (2) torso-roll PD   -> spine frontal servo (keep the trunk upright)
+// Runs on localhost in seconds.
+// Build: machin encode src/pbd3.src src/body3.src ml/lat_spike.src > /tmp/ls.mfl && machin run /tmp/ls.mfl
+
+func lat_dt() (v) { v = 0.0166666 }
+
+type Trial struct {
+	fell    bool
+	maxroll float
+	maxcz   float
+	ticks   int
+	reason  string
+}
+
+// one push-recovery trial.
+//   kick   = lateral velocity impulse to the trunk at t=settle
+//   ctrl   = 0 passive, 1 analytic controller active
+//   kp,kd  = lateral-CoM PD gains ;  cH,cA = hip/ankle command scales (signed)
+//   kr     = torso-roll gain on the spine servo (signed)
+func lat_trial(kick, ctrl, kp, kd, cH, cA, kr) (tr) {
+	tr = Trial{fell: false, maxroll: 0.0, maxcz: 0.0, ticks: 0, reason: "-"}
+	b := biped3_new()
+	dt := lat_dt()
+	s := 0
+	while s < 40 {
+		biped3_step(b, dt)
+		s = s + 1
+	}
+	b.w.pz[b.hip] = b.w.pz[b.hip] + kick
+	b.w.pz[b.hipL] = b.w.pz[b.hipL] + kick
+	b.w.pz[b.hipR] = b.w.pz[b.hipR] + kick
+	b.w.pz[b.chest] = b.w.pz[b.chest] + kick
+	b.w.pz[b.head] = b.w.pz[b.head] + kick
+	_, _, czPrev := w3_com(b.w)
+	rollPrev := biped3_roll(b)
+	t := 0
+	while t < 240 {
+		_, _, cz := w3_com(b.w)
+		czdot := (cz - czPrev) / dt
+		czPrev = cz
+		roll := biped3_roll(b)
+		rolldot := (roll - rollPrev) / dt
+		rollPrev = roll
+		if ctrl == 1 {
+			u := kp * cz + kd * czdot
+			w3_set_joint_target(b.w, b.jHipFL, cH * u)
+			w3_set_joint_target(b.w, b.jHipFR, 0.0 - cH * u)
+			w3_set_joint_target(b.w, b.jAnkFL, cA * u)
+			w3_set_joint_target(b.w, b.jAnkFR, 0.0 - cA * u)
+			// torso-roll loop: bend the spine (frontal) to hold the trunk upright
+			w3_set_joint_target(b.w, b.jSpineF, kr * (roll + 0.25 * rolldot))
+		}
+		biped3_step(b, dt)
+		r := absf3(biped3_roll(b))
+		if r > tr.maxroll { tr.maxroll = r }
+		acz := absf3(cz)
+		if acz > tr.maxcz { tr.maxcz = acz }
+		t = t + 1
+		if biped3_fallen(b) {
+			tr.fell = true
+			tr.reason = "roll"
+			if absf3(biped3_pitch(b)) > 1.1 { tr.reason = "pitch" }
+			if b.w.py[b.chest] < 0.85 { tr.reason = "sag" }
+			break
+		}
+	}
+	tr.ticks = t
+}
+
+func fmt3(v) (s) {
+	neg := false
+	x := v
+	if x < 0.0 { neg = true  x = 0.0 - x }
+	w := int(floor(x * 1000.0 + 0.5))
+	fr := str(w % 1000)
+	while len(fr) < 3 { fr = "0" + fr }
+	s = str(w / 1000) + "." + fr
+	if neg { s = "-" + s }
+}
+
+func report(tag, tr) {
+	st := "SURVIVED"
+	if tr.fell { st = "FELL    " }
+	println(tag + "  " + st + " (" + tr.reason + ")  maxroll=" + fmt3(tr.maxroll) + "  maxCz=" + fmt3(tr.maxcz) + "  ticks=" + str(tr.ticks))
+}
+
+func main() {
+	println("=== 3D lateral push-recovery spike: analytic frontal controller vs passive ===")
+	println("(survive = upright for 240 ticks / 4s; kick ~ 0.00028/substep per 1 m/s)")
+
+	// calibrate the spine-roll sign at a push the CoM-only loop couldn't hold.
+	println("-- spine-roll sign calibration (kick=0.0016, CoM loop on) --")
+	report("kr=-1.2 ", lat_trial(0.0016, 1, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0 - 1.2))
+	report("kr=+1.2 ", lat_trial(0.0016, 1, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 1.2))
+
+	// the money comparison: same push, three controllers.
+	println("-- survivable-push sweep: PASSIVE vs CoM-only vs CoM+spine --")
+	kk := 0.0006
+	while kk < 0.0035 {
+		p := lat_trial(kk, 0, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0)
+		c := lat_trial(kk, 1, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0)
+		f := lat_trial(kk, 1, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0 - 1.2)
+		report("kick=" + fmt3(kk) + " PASSIVE  ", p)
+		report("kick=" + fmt3(kk) + " CoM-only ", c)
+		report("kick=" + fmt3(kk) + " CoM+spine", f)
+		kk = kk + 0.0004
+	}
+}

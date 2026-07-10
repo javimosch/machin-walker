@@ -1,0 +1,252 @@
+// machin-walker — src/sag3.src
+// Shared machinery for the native 3D SAGITTAL walker (Test B, Stage A): the
+// [13,16,4] controller's sensors + I/O, the frontal-plane RAIL (so training
+// isolates the sagittal gait), the open-loop CPG "expert" (for clone-then-
+// warm-start, the recipe that cracked the 2D plateau), and the railed episode
+// + fitness. Composes pbd3.src, body3.src, tinybrain.src.
+
+func s3_dt() (v) { v = 0.0166666 }
+// gait cadence — a package global so the cadence sweep can scan it (the 2D
+// strict-walk unlock was 0.62Hz; the heavier 3D rig may want slower)
+var g_s3_hz = 0.62
+func s3_hz() (v) { v = g_s3_hz }
+
+// ── sagittal sensors, matching src/body.src (the controller's training units) ──
+func s3_vx(b, dt) (v) { v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0) }
+func s3_vy(b, dt) (v) { v = (b.w.py[b.hip] - b.w.oy[b.hip]) / (dt / 6.0) }
+func s3_pitch_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	cvx := (b.w.px[b.chest] - b.w.ox[b.chest]) / sdt
+	hvx := (b.w.px[b.hip] - b.w.ox[b.hip]) / sdt
+	sl := b.w.py[b.chest] - b.w.py[b.hip]
+	if sl < 0.1 { sl = 0.1 }
+	r = (cvx - hvx) / sl
+}
+func s3_contact(b, toe, hi, ho) (c) {
+	c = 0
+	if b.w.contact[toe] == 1 || b.w.contact[hi] == 1 || b.w.contact[ho] == 1 { c = 1 }
+}
+func s3_noise(seed, t, i) (v) {
+	x := sin(float(seed) * 12.9898 + float(t) * 78.233 + float(i) * 37.719) * 43758.5453
+	v = (x - floor(x)) * 2.0 - 1.0
+}
+
+// the 13-input vector (same layout as the 2D walker), built from 3D sensors
+func s3_inputs(b, ph, jHipT, jKneeT, jAnkT, jHipO, cT, cO, nz, nseed, nt) (x) {
+	x = []float{}
+	x = append(x, sin(ph))
+	x = append(x, sin(ph + pi() / 2.0))
+	x = append(x, biped3_pitch(b))
+	x = append(x, s3_pitch_rate(b, s3_dt()) / 3.0)
+	x = append(x, (b.w.py[b.hip] - 0.96) * 4.0)
+	x = append(x, s3_vx(b, s3_dt()) / 2.0)
+	x = append(x, s3_vy(b, s3_dt()) / 1.5)
+	x = append(x, w3_joint_angle(b.w, jHipT))
+	x = append(x, w3_joint_angle(b.w, jKneeT))
+	x = append(x, w3_joint_angle(b.w, jAnkT))
+	x = append(x, w3_joint_angle(b.w, jHipO))
+	x = append(x, float(cT))
+	x = append(x, float(cO))
+	if nz > 0.0 {
+		i := 0
+		while i < len(x) {
+			x[i] = x[i] + nz * s3_noise(nseed, nt, i)
+			i = i + 1
+		}
+	}
+}
+func s3_apply(b, out, jHip, jKnee, jAnk) {
+	w3_set_joint_target(b.w, jHip, out[0] * 1.1)
+	w3_set_joint_target(b.w, jKnee, (out[1] - 1.0) * 0.8)
+	w3_set_joint_target(b.w, jAnk, out[2] * 0.5)
+}
+func s3_arm_swing(b) {
+	sl := 0.0 - 0.55 * w3_joint_angle(b.w, b.jHipL)
+	if sl > 0.9 { sl = 0.9 }
+	if sl < 0.0 - 0.9 { sl = 0.0 - 0.9 }
+	sr := 0.0 - 0.55 * w3_joint_angle(b.w, b.jHipR)
+	if sr > 0.9 { sr = 0.9 }
+	if sr < 0.0 - 0.9 { sr = 0.0 - 0.9 }
+	w3_set_joint_target(b.w, b.jShL, sl)
+	w3_set_joint_target(b.w, b.jShR, sr)
+	w3_set_joint_target(b.w, b.jElbL, 0.35)
+	w3_set_joint_target(b.w, b.jElbR, 0.35)
+}
+// frontal-plane RAIL: hold the lateral plane so training isolates the sagittal
+// gait (Stage B anneals this off under the analytic lateral controller)
+func s3_rail(b) {
+	dx := b.w.px[b.hip] - b.w.px[b.chest]
+	dz := b.w.pz[b.hip] - b.w.pz[b.chest]
+	b.w.px[b.chest] = b.w.px[b.chest] + 0.03 * dx
+	b.w.px[b.head] = b.w.px[b.head] + 0.045 * dx
+	b.w.pz[b.chest] = b.w.pz[b.chest] + 0.05 * dz
+	b.w.pz[b.head] = b.w.pz[b.head] + 0.07 * dz
+	cz := 0.12 * b.w.pz[b.hip]
+	b.w.pz[b.hip] = b.w.pz[b.hip] - cz
+	b.w.oz[b.hip] = b.w.oz[b.hip] - cz
+	w3_set_joint_target(b.w, b.jHipFL, 0.0)
+	w3_set_joint_target(b.w, b.jHipFR, 0.0)
+	w3_set_joint_target(b.w, b.jAnkFL, 0.0)
+	w3_set_joint_target(b.w, b.jAnkFR, 0.0)
+}
+
+type S3Ep struct {
+	dist float
+	ticks int
+	fell bool
+	flight int
+	lowhip float
+}
+
+// ── the open-loop CPG "expert" (ported from walk_cpg.src) ──
+func cpg_hip(p, ph) (v) { v = p[1] + p[0] * sin(ph) }
+func cpg_knee(p, ph) (v) { v = p[2] * (0.5 + 0.5 * sin(ph + p[3])) }
+func cpg_ank(p, ph) (v) { v = p[4] * sin(ph + p[5]) }
+
+// run the CPG (fixed clock) on the 3D sagittal joints, railed
+func s3_cpg_episode(p, maxTicks) (ep) {
+	ep = S3Ep{dist: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	b := biped3_new()
+	dt := s3_dt()
+	x0 := b.w.px[b.hip]
+	t := 0
+	while t < maxTicks {
+		ph := 2.0 * pi() * s3_hz() * float(t) * dt
+		w3_set_joint_target(b.w, b.jHipL, cpg_hip(p, ph))
+		w3_set_joint_target(b.w, b.jKneeL, cpg_knee(p, ph))
+		w3_set_joint_target(b.w, b.jAnkL, cpg_ank(p, ph))
+		w3_set_joint_target(b.w, b.jHipR, cpg_hip(p, ph + pi()))
+		w3_set_joint_target(b.w, b.jKneeR, cpg_knee(p, ph + pi()))
+		w3_set_joint_target(b.w, b.jAnkR, cpg_ank(p, ph + pi()))
+		s3_arm_swing(b)
+		s3_rail(b)
+		biped3_step(b, dt)
+		if s3_contact(b, b.toeL, b.heelIL, b.heelOL) + s3_contact(b, b.toeR, b.heelIR, b.heelOR) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := b.w.py[b.hip]
+		if h < 0.82 { ep.lowhip = ep.lowhip + (0.82 - h) }
+		t = t + 1
+		if biped3_fallen(b) { ep.fell = true  break }
+		if b.w.px[b.hip] - x0 > 12.5 { break }
+	}
+	ep.ticks = t
+	ep.dist = b.w.px[b.hip] - x0
+}
+
+// ── the net episode (learned clock rate), railed ──
+func s3_episode(net, maxTicks, noiseSeed) (ep) {
+	ep = S3Ep{dist: 0.0, ticks: 0, fell: false, flight: 0, lowhip: 0.0}
+	nz := 0.0
+	if noiseSeed > 0 { nz = 0.01 }
+	b := biped3_new()
+	dt := s3_dt()
+	x0 := b.w.px[b.hip]
+	ph := 0.0
+	t := 0
+	while t < maxTicks {
+		cl := s3_contact(b, b.toeL, b.heelIL, b.heelOL)
+		cr := s3_contact(b, b.toeR, b.heelIR, b.heelOR)
+		outL := net_forward(net, s3_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr, nz, noiseSeed, t))
+		outR := net_forward(net, s3_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl, nz, noiseSeed + 7, t))
+		s3_apply(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+		s3_apply(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		s3_arm_swing(b)
+		s3_rail(b)
+		rate := 1.0 + 0.125 * (outL[3] + outR[3])
+		if rate < 0.8 { rate = 0.8 }
+		if rate > 1.3 { rate = 1.3 }
+		ph = ph + 2.0 * pi() * s3_hz() * dt * rate
+		biped3_step(b, dt)
+		if s3_contact(b, b.toeL, b.heelIL, b.heelOL) + s3_contact(b, b.toeR, b.heelIR, b.heelOR) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := b.w.py[b.hip]
+		if h < 0.82 { ep.lowhip = ep.lowhip + (0.82 - h) }
+		t = t + 1
+		if biped3_fallen(b) { ep.fell = true  break }
+		if b.w.px[b.hip] - x0 > 12.5 { break }
+	}
+	ep.ticks = t
+	ep.dist = b.w.px[b.hip] - x0
+}
+
+// walking fitness (2D doctrine): forward distance if it STAYS UP (+survival),
+// minus flight + crouch penalties; beyond 8% airborne pays like a fall
+func s3_ep_score(ep) (f) {
+	tk := float(ep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 2.0 * float(ep.flight) / tk
+	f = f - 2.0 * ep.lowhip / tk
+	if float(ep.flight) > 0.08 * tk { f = 0.25 * ep.dist }
+}
+
+// SEED selection score: we want a forward SHUFFLE (near-continuous contact) to
+// clone, not a bound. Flight is penalized much harder here than in the evolve
+// fitness, and a hard cap makes any >12%-airborne gait pay like a fall — so the
+// clone inherits a low-flight gait the warm-start can grow a walk from.
+func s3_cpg_score(p, maxTicks) (f) {
+	ep := s3_cpg_episode(p, maxTicks)
+	tk := float(ep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	ff := float(ep.flight) / tk
+	if ep.fell {
+		f = 0.25 * ep.dist
+	} else {
+		f = ep.dist + 1.0
+	}
+	f = f - 6.0 * float(ep.flight) / tk
+	f = f - 2.0 * ep.lowhip / tk
+	if ff > 0.12 { f = 0.2 * ep.dist }
+}
+
+// parametric CPG search. Best is tracked in SCALARS (b0..b5) and written into
+// the caller's pre-allocated `out` slice via ELEMENT WRITES at the end — the
+// documented arena-safe way to cross the boundary. (Reassigning a `best` slice
+// near the per-iteration arena{} returned stale/corrupt values: the printed
+// params did not reproduce the reported flight.) Returns the best score.
+func s3_cpg_search(samples, refines, maxTicks, out) (bs) {
+	b0 := 0.28  b1 := 0.0  b2 := 0.0 - 0.5  b3 := 1.5  b4 := 0.15  b5 := 0.0
+	bs = 0.0
+	arena { bs = s3_cpg_score([]float{b0, b1, b2, b3, b4, b5}, maxTicks) }
+	i := 0
+	while i < samples {
+		a0 := tb_randf_range(0.12, 0.45)
+		a1 := tb_randf_range(0.0 - 0.15, 0.15)
+		a2 := tb_randf_range(0.0 - 0.9, 0.0 - 0.2)
+		a3 := tb_randf_range(0.0, 6.28)
+		a4 := tb_randf_range(0.0, 0.28)
+		a5 := tb_randf_range(0.0, 6.28)
+		s := 0.0
+		arena { s = s3_cpg_score([]float{a0, a1, a2, a3, a4, a5}, maxTicks) }
+		if s > bs { bs = s  b0 = a0  b1 = a1  b2 = a2  b3 = a3  b4 = a4  b5 = a5 }
+		i = i + 1
+	}
+	i = 0
+	while i < refines {
+		a0 := b0 + tb_randf_range(0.0 - 0.06, 0.06)
+		a1 := b1 + tb_randf_range(0.0 - 0.06, 0.06)
+		a2 := b2 + tb_randf_range(0.0 - 0.06, 0.06)
+		a3 := b3 + tb_randf_range(0.0 - 0.06, 0.06)
+		a4 := b4 + tb_randf_range(0.0 - 0.06, 0.06)
+		a5 := b5 + tb_randf_range(0.0 - 0.06, 0.06)
+		s := 0.0
+		arena { s = s3_cpg_score([]float{a0, a1, a2, a3, a4, a5}, maxTicks) }
+		if s > bs { bs = s  b0 = a0  b1 = a1  b2 = a2  b3 = a3  b4 = a4  b5 = a5 }
+		i = i + 1
+	}
+	// element-write the winner into the caller's pre-allocated slice
+	out[0] = b0  out[1] = b1  out[2] = b2  out[3] = b3  out[4] = b4  out[5] = b5
+}
+
+// mean-of-2-noise-seeds fitness (robust; min-of-2 stalls exploration)
+func s3_fitness(net) (f) {
+	e1 := s3_episode(net, 480, 101)
+	e2 := s3_episode(net, 480, 202)
+	f = (s3_ep_score(e1) + s3_ep_score(e2)) * 0.5
+}

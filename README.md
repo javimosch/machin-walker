@@ -65,4 +65,4 @@ Training runs on a 14-core box via tinybrain's parallel evolution (`cfg.workers`
 
 ## Open milestones
 
-- **Lateral balance** (full 3D) — physics, rig, trainer and landing kit all staged; the boundary at running speed is mapped, and the slow walker is the designated teacher for the next attempt.
+- **Lateral balance** (full 3D) — physics, rig, trainer and landing kit all staged. The wall is now **precisely mapped** (lateral authority proven; 0.40 Hz is the 3D walk cadence; the blocker is a native 3D sagittal *walk*, held up by clone-divergence + a bounce-basin fitness landscape). The full investigation log, the dead-ends not to repeat, two hard-won infra gotchas (arena discipline + contact-chaos sensitivity), the ranked next levers, and the rbm21 operating protocol are documented in **[`.agents/skills/3d-lateral-balance/SKILL.md`](.agents/skills/3d-lateral-balance/SKILL.md)** — read it before resuming. Work-in-progress lives on the `3d-lateral-balance-wip` branch.
