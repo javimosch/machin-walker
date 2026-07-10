@@ -1,0 +1,13 @@
+// headless proof: does the analytic lateral controller recover from shoves that
+// topple the uncontrolled biped (both on the support boom)?
+func main() {
+	println("=== supported lateral push-recovery: uncontrolled vs analytic ===")
+	i := 0
+	while i < 5 {
+		seed := 10 + i * 7
+		u := lb_episode(0, Net{}, seed)
+		a := lb_episode(1, Net{}, seed)
+		println("seed " + str(seed) + ":  UNCTRL survived=" + str(u.survived) + "/8 maxroll=" + tb_fmt(u.maxroll) + " toppled=" + str(u.toppled) + "   |   ANALYTIC survived=" + str(a.survived) + "/8 maxroll=" + tb_fmt(a.maxroll) + " toppled=" + str(a.toppled))
+		i = i + 1
+	}
+}

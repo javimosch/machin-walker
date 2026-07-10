@@ -1,0 +1,121 @@
+// machin-walker — game/latbal_game.src
+// 3D LATERAL BALANCE on a support boom, head to head. Front view (camera looks
+// down +x, so sideways ROLL is what you see). Left = NEURO (tinybrain net),
+// right = ANALYTIC (capture-point/PD). Both on a disclosed support boom that
+// holds the sagittal plane; a rocking disturbance shoves them sideways and the
+// controllers hold the torso upright with hip/ankle/spine. Build: ./build_latbal.sh
+
+extern "raylib" {
+	header "raylib.h"
+	link "raylib" link "GL" link "m" link "pthread" link "dl" link "rt" link "X11"
+	cstruct Color { r u8 g u8 b u8 a u8 }
+	cstruct Vector3 { x f32 y f32 z f32 }
+	cstruct Camera3D { position Vector3 target Vector3 up Vector3 fovy f32 projection i32 }
+	fn InitWindow(i32, i32, string)
+	fn SetTargetFPS(i32)
+	fn WindowShouldClose() bool
+	fn BeginDrawing()
+	fn EndDrawing()
+	fn ClearBackground(Color)
+	fn CloseWindow()
+	fn BeginMode3D(Camera3D)
+	fn EndMode3D()
+	fn DrawLine3D(Vector3, Vector3, Color)
+	fn DrawSphere(Vector3, f32, Color)
+	fn DrawCylinderEx(Vector3, Vector3, f32, f32, i32, Color)
+	fn DrawCube(Vector3, f32, f32, f32, Color)
+	fn DrawText(string, i32, i32, i32, Color)
+	fn TakeScreenshot(string)
+}
+
+func v3(x, y, z) (p) { p = Vector3{x, y, z} }
+func pt(b, i, zoff) (p) { p = Vector3{b.w.px[i], b.w.py[i], b.w.pz[i] + zoff} }
+
+func bone(b, a, c, zoff, col) {
+	DrawLine3D(pt(b, a, zoff), pt(b, c, zoff), col)
+}
+
+func draw_biped(b, zoff, col) {
+	// support boom: a post behind the pelvis + an arm to the hip (the "structure")
+	steel := Color{120, 128, 140, 255}
+	DrawCylinderEx(v3(-0.75, 0.0, zoff), v3(-0.75, 1.05, zoff), 0.035, 0.035, 8, steel)
+	DrawCylinderEx(v3(-0.75, 1.02, zoff), v3(-0.06, 0.96, zoff), 0.028, 0.028, 8, steel)
+	// skeleton bones
+	bone(b, b.hip, b.hipL, zoff, col)
+	bone(b, b.hip, b.hipR, zoff, col)
+	bone(b, b.hipL, b.hipR, zoff, col)
+	bone(b, b.hip, b.chest, zoff, col)
+	bone(b, b.chest, b.head, zoff, col)
+	bone(b, b.hipL, b.kneeL, zoff, col)
+	bone(b, b.kneeL, b.ankleL, zoff, col)
+	bone(b, b.ankleL, b.toeL, zoff, col)
+	bone(b, b.ankleL, b.heelOL, zoff, col)
+	bone(b, b.hipR, b.kneeR, zoff, col)
+	bone(b, b.kneeR, b.ankleR, zoff, col)
+	bone(b, b.ankleR, b.toeR, zoff, col)
+	bone(b, b.ankleR, b.heelOR, zoff, col)
+	bone(b, b.chest, b.elbowL, zoff, col)
+	bone(b, b.elbowL, b.handL, zoff, col)
+	bone(b, b.chest, b.elbowR, zoff, col)
+	bone(b, b.elbowR, b.handR, zoff, col)
+	// joints as spheres
+	DrawSphere(pt(b, b.head, zoff), 0.11, col)
+	DrawSphere(pt(b, b.chest, zoff), 0.06, col)
+	DrawSphere(pt(b, b.hip, zoff), 0.05, col)
+}
+
+func amp_of(cyc) (v) { v = 0.000028 + 0.0000055 * float(cyc) }
+
+func main() {
+	hasNet := len(read_file("ml/models/latbal.json")) > 0
+	net := Net{}
+	if hasNet { net = net_load("ml/models/latbal.json") }
+
+	bN := biped3_new()
+	czN := 0.0  rollN := 0.0
+	modeN := 2
+	if hasNet == false { modeN = 0 }
+
+	InitWindow(1100, 720, "machin-walker - 3D lateral balance on a support boom")
+	SetTargetFPS(60)
+	cam := Camera3D{v3(5.2, 1.35, 0.0), v3(0.0, 0.95, 0.0), v3(0.0, 1.0, 0.0), 30.0, 0}
+	colN := Color{90, 220, 130, 255}
+	s := 0
+	while s < 40 {
+		lb_stance(bN)  lb_support0(bN)  biped3_step(bN, lb_dt())
+		s = s + 1
+	}
+	t := 0
+	frame := 0
+	maxRN := 0.0
+	while WindowShouldClose() == false {
+		cyc := (t / 100) % 8
+		amp := amp_of(cyc)
+		czN, rollN = lb_view_step(bN, modeN, net, t, amp, 68.0, czN, rollN)
+		rn := absf3(biped3_roll(bN))
+		if rn > maxRN { maxRN = rn }
+		t = t + 1
+
+		BeginDrawing()
+		ClearBackground(Color{16, 18, 26, 255})
+		BeginMode3D(cam)
+		DrawCube(v3(0.0, -0.02, 0.0), 1.8, 0.02, 1.8, Color{40, 44, 56, 255})
+		draw_biped(bN, 0.0, colN)
+		EndMode3D()
+		DrawText("3D LATERAL BALANCE", 30, 26, 28, Color{225, 225, 232, 255})
+		labN := "tinybrain NEURO controller"
+		if hasNet == false { labN = "NO CONTROL (topples)" }
+		DrawText(labN, 30, 62, 20, colN)
+		st := "HOLDING"
+		if rn > 0.6 { st = "TOPPLING" }
+		DrawText("roll " + tb_fmt(rn) + " rad  (peak " + tb_fmt(maxRN) + ")  " + st, 30, 90, 20, Color{225, 225, 232, 255})
+		DrawText("A support boom holds the sagittal plane (disclosed, like a real robot dev rig); the net holds", 150, 672, 16, Color{150, 155, 165, 255})
+		DrawText("LATERAL balance under a rocking shove via hip ab/adduction + ankle inversion + a spine servo.", 150, 692, 16, Color{150, 155, 165, 255})
+		EndDrawing()
+		frame = frame + 1
+		if frame == 300 || frame == 600 {
+			TakeScreenshot("latbal_shot_" + str(frame) + ".png")
+		}
+	}
+	CloseWindow()
+}

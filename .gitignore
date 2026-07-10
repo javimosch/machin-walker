@@ -3,3 +3,7 @@
 *.mfl
 walker_shot_*.png
 /train.log
+
+latbal-game
+latbal.mfl
+latbal_shot_*.png

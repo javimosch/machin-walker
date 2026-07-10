@@ -1,0 +1,191 @@
+// machin-walker — src/latbal.src
+// 3D LATERAL BALANCE demo on a SUPPORT BOOM (disclosed): a rig holds the pelvis
+// in the sagittal plane (fore-aft + height + pitch) — exactly how real bipeds
+// (Cassie, early Atlas) are developed — leaving the FRONTAL plane free, so
+// lateral balance is the thing on display. Under a sequence of sideways shoves,
+// a controller must keep the torso upright by frontal hip ab/adduction, ankle
+// inversion, and a spine roll servo. Two controllers race: an analytic
+// capture-point/PD law and an evolved tinybrain net. Composes pbd3 + body3.
+
+func lb_dt() (v) { v = 0.0166666 }
+
+// the SUPPORT BOOM: pin the pelvis + torso in the sagittal plane (x,y), leaving
+// lateral (z) translation and roll free. p AND o set together => no velocity
+// injected. Legs/feet stay free; the lateral plane is all the controller's.
+func lb_support(b, x0, y0) {
+	b.w.px[b.hip] = x0    b.w.ox[b.hip] = x0
+	b.w.py[b.hip] = y0    b.w.oy[b.hip] = y0
+	b.w.px[b.chest] = x0  b.w.ox[b.chest] = x0
+	b.w.px[b.head] = x0   b.w.ox[b.head] = x0
+}
+
+// a sideways shove: a lateral velocity impulse to the trunk (+z or -z)
+func lb_shove(b, k) {
+	b.w.pz[b.hip] = b.w.pz[b.hip] + k
+	b.w.pz[b.hipL] = b.w.pz[b.hipL] + k
+	b.w.pz[b.hipR] = b.w.pz[b.hipR] + k
+	b.w.pz[b.chest] = b.w.pz[b.chest] + k
+	b.w.pz[b.head] = b.w.pz[b.head] + k
+}
+
+// lateral CoM velocity + roll rate are tracked by the episode; the analytic law
+// is a PD on lateral CoM -> antisymmetric hip/ankle, plus a spine roll PD.
+func lb_analytic(b, cz, czdot, roll, rolldot) (hf, af, sp) {
+	u := 3.5 * cz + 0.9 * czdot
+	hf = 0.0 - 1.7 * u
+	af = 0.0 - 1.1 * u
+	sp = 0.0 - 1.1 * (roll + 0.28 * rolldot)
+}
+
+func lb_apply_frontal(b, hf, af, sp) {
+	w3_set_joint_target(b.w, b.jHipFL, hf)
+	w3_set_joint_target(b.w, b.jHipFR, 0.0 - hf)
+	w3_set_joint_target(b.w, b.jAnkFL, af)
+	w3_set_joint_target(b.w, b.jAnkFR, 0.0 - af)
+	w3_set_joint_target(b.w, b.jSpineF, sp)
+}
+
+// sagittal joints held at neutral stance (the boom keeps posture; legs just
+// stand). Arms neutral-down.
+func lb_stance(b) {
+	w3_set_joint_target(b.w, b.jHipL, 0.0)
+	w3_set_joint_target(b.w, b.jHipR, 0.0)
+	w3_set_joint_target(b.w, b.jKneeL, 0.0 - 0.05)
+	w3_set_joint_target(b.w, b.jKneeR, 0.0 - 0.05)
+	w3_set_joint_target(b.w, b.jAnkL, 0.0)
+	w3_set_joint_target(b.w, b.jAnkR, 0.0)
+	w3_set_joint_target(b.w, b.jShL, 0.0)
+	w3_set_joint_target(b.w, b.jShR, 0.0)
+	w3_set_joint_target(b.w, b.jElbL, 0.2)
+	w3_set_joint_target(b.w, b.jElbR, 0.2)
+}
+
+type LbEp struct {
+	maxroll float
+	toppled bool
+	survived int   // shoves survived
+	ticks   int
+}
+
+func lb_topple() (v) { v = 0.6 }   // roll past this = would have fallen laterally
+
+// run a push-recovery episode. mode 0 = uncontrolled (frontal passive), 1 =
+// analytic. `net` used when mode==2. shove schedule: alternating, growing.
+func lb_episode(mode, net, seed) (ep) {
+	ep = LbEp{maxroll: 0.0, toppled: false, survived: 0, ticks: 0}
+	b := biped3_new()
+	dt := lb_dt()
+	x0 := b.w.px[b.hip]
+	y0 := b.w.py[b.hip]
+	// settle on the boom
+	s := 0
+	while s < 40 {
+		lb_stance(b)
+		lb_support(b, x0, y0)
+		biped3_step(b, dt)
+		s = s + 1
+	}
+	czp := 0.0
+	_, _, czp = w3_com(b.w)
+	rollp := biped3_roll(b)
+	// a CONTINUOUS rocking disturbance (like balancing on a rocking deck): a
+	// slow sideways forcing whose amplitude ramps up over the episode. Robust,
+	// steady-state — not a knife-edge impulse. `survived` = number of half-cycles
+	// (~shoves) weathered with roll under the topple line.
+	nCyc := 8
+	gap := 100
+	period := 68.0
+	i := 0
+	t := 0
+	while i < nCyc {
+		amp := 0.000028 + 0.0000055 * float(i) + 0.0000004 * float(seed % 7)
+		fell := false
+		j := 0
+		while j < gap {
+			push := amp * sin(float(t) * 2.0 * pi() / period)
+			lb_shove(b, push)
+			_, comy, cz := w3_com(b.w)
+			czdot := (cz - czp) / dt
+			czp = cz
+			roll := biped3_roll(b)
+			rolldot := (roll - rollp) / dt
+			rollp = roll
+			lb_stance(b)
+			if mode == 1 {
+				hf, af, sp := lb_analytic(b, cz, czdot, roll, rolldot)
+				lb_apply_frontal(b, hf, af, sp)
+			}
+			if mode == 2 {
+				out := net_forward(net, lb_inputs(b, cz, czdot, roll, rolldot))
+				lb_apply_frontal(b, out[0] * 0.45, out[1] * 0.35, out[2] * 0.4)
+			}
+			lb_support(b, x0, y0)
+			biped3_step(b, dt)
+			r := absf3(biped3_roll(b))
+			if r > ep.maxroll { ep.maxroll = r }
+			if r > lb_topple() { fell = true }
+			t = t + 1
+			j = j + 1
+		}
+		if fell {
+			ep.toppled = true
+		} else {
+			ep.survived = ep.survived + 1
+		}
+		i = i + 1
+	}
+	ep.ticks = t
+}
+
+// pin to the nominal spawn pose (hip at 0, 0.96) — for the live viewer/wasm
+func lb_support0(b) { lb_support(b, 0.0, 0.96) }
+
+// one live tick for a viewer/wasm host: apply the rocking disturbance, control
+// (mode 0 uncontrolled / 1 analytic / 2 net), support, step. Returns updated
+// (czPrev, rollPrev) to thread through the next call.
+func lb_view_step(b, mode, net, t, amp, period, czp, rollp) (czp2, rollp2) {
+	dt := lb_dt()
+	push := amp * sin(float(t) * 2.0 * pi() / period)
+	lb_shove(b, push)
+	_, _, cz := w3_com(b.w)
+	czdot := (cz - czp) / dt
+	roll := biped3_roll(b)
+	rolldot := (roll - rollp) / dt
+	lb_stance(b)
+	if mode == 1 {
+		hf, af, sp := lb_analytic(b, cz, czdot, roll, rolldot)
+		lb_apply_frontal(b, hf, af, sp)
+	}
+	if mode == 2 {
+		out := net_forward(net, lb_inputs(b, cz, czdot, roll, rolldot))
+		lb_apply_frontal(b, out[0] * 0.45, out[1] * 0.35, out[2] * 0.4)
+	}
+	lb_support0(b)
+	biped3_step(b, dt)
+	czp2 = cz
+	rollp2 = roll
+}
+
+// net sensors: roll, roll rate, lateral CoM, lateral CoM vel, foot contacts
+func lb_inputs(b, cz, czdot, roll, rolldot) (x) {
+	cl := 0.0
+	if b.w.contact[b.toeL] == 1 || b.w.contact[b.heelIL] == 1 || b.w.contact[b.heelOL] == 1 { cl = 1.0 }
+	cr := 0.0
+	if b.w.contact[b.toeR] == 1 || b.w.contact[b.heelIR] == 1 || b.w.contact[b.heelOR] == 1 { cr = 1.0 }
+	x = []float{roll * 2.0, rolldot / 3.0, cz * 4.0, czdot / 2.0, cl, cr}
+}
+
+func lb_score(ep) (f) {
+	f = float(ep.survived) * 10.0 - ep.maxroll * 4.0
+}
+
+func lb_fitness(net) (f) {
+	f = 1000000000.0
+	i := 0
+	while i < 3 {
+		ep := lb_episode(2, net, 10 + i * 3)
+		sc := lb_score(ep)
+		if sc < f { f = sc }
+		i = i + 1
+	}
+}

@@ -1,0 +1,19 @@
+// train a tinybrain net to hold lateral balance on the rocking boom
+func main() {
+	n := net_new([]int{6, 10, 3}, []string{"tanh", "tanh"}, 7)
+	fit := func(nn) { return lb_fitness(nn) }
+	cfg := evolve_cfg_default()
+	cfg.pop = 80
+	cfg.generations = 120
+	cfg.workers = 6
+	cfg.target_fitness = 76.0
+	cfg.print_every = 20
+	t0 := now_ms()
+	res, champ := evolve_run(n, fit, cfg)
+	ms := now_ms() - t0
+	mkdir("ml/models")
+	net_save(champ, "ml/models/latbal.json")
+	// evaluate champion
+	e := lb_episode(2, champ, 3)
+	println("{\"artifact\":\"ml/models/latbal.json\",\"gens\":" + str(res.generations) + ",\"best\":" + tb_fmt(res.best_fitness) + ",\"ms\":" + str(ms) + ",\"champ\":{\"survived\":" + str(e.survived) + ",\"maxroll\":" + tb_fmt(e.maxroll) + ",\"toppled\":" + str(e.toppled) + "}}")
+}
