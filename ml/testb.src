@@ -1,0 +1,212 @@
+// machin-walker — ml/testb.src   (Test B: lateral capture-point stepping)
+// The fresh angle, made concrete: DECOUPLE the planes. The certified 2D walker
+// (ml/models/walker_slow.json, [13,16,4]) drives the 3D rig's SAGITTAL joints
+// verbatim — same 13 sensors, same 4 outputs, same learned clock-rate — while
+// the FRONTAL plane is handled separately by an analytic controller. Lateral
+// modes: 0 passive, 1 railed (does the bridge even walk?), 2 analytic CoM+spine
+// PD, 3 = 2 + lateral capture-point foot placement.
+// Build: machin encode src/pbd3.src src/body3.src ml/vendor/tinybrain.src ml/testb.src > /tmp/tb.mfl && machin run /tmp/tb.mfl
+
+func tb_dt() (v) { v = 0.0166666 }
+func tb_hz() (v) { v = 0.62 }   // walker_slow was trained at 0.62 Hz
+
+// ── 3D sagittal sensors, matching src/body.src (the 2D net's training units) ──
+func tb_vx(b, dt) (v) { v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0) }
+func tb_vy(b, dt) (v) { v = (b.w.py[b.hip] - b.w.oy[b.hip]) / (dt / 6.0) }
+func tb_vz(b, dt) (v) { v = (b.w.pz[b.hip] - b.w.oz[b.hip]) / (dt / 6.0) }
+func tb_pitch_rate(b, dt) (r) {
+	sdt := dt / 6.0
+	cvx := (b.w.px[b.chest] - b.w.ox[b.chest]) / sdt
+	hvx := (b.w.px[b.hip] - b.w.ox[b.hip]) / sdt
+	sl := b.w.py[b.chest] - b.w.py[b.hip]
+	if sl < 0.1 { sl = 0.1 }
+	r = (cvx - hvx) / sl
+}
+func tb_contact(b, toe, hi, ho) (c) {
+	c = 0
+	if b.w.contact[toe] == 1 || b.w.contact[hi] == 1 || b.w.contact[ho] == 1 { c = 1 }
+}
+
+// the 2D net's 13-input vector, built from 3D sagittal sensors (no noise)
+func tb_inputs(b, ph, jHipT, jKneeT, jAnkT, jHipO, cT, cO) (x) {
+	x = []float{}
+	x = append(x, sin(ph))
+	x = append(x, sin(ph + pi() / 2.0))
+	x = append(x, biped3_pitch(b))
+	x = append(x, tb_pitch_rate(b, tb_dt()) / 3.0)
+	x = append(x, (b.w.py[b.hip] - 0.96) * 4.0)
+	x = append(x, tb_vx(b, tb_dt()) / 2.0)
+	x = append(x, tb_vy(b, tb_dt()) / 1.5)
+	x = append(x, w3_joint_angle(b.w, jHipT))
+	x = append(x, w3_joint_angle(b.w, jKneeT))
+	x = append(x, w3_joint_angle(b.w, jAnkT))
+	x = append(x, w3_joint_angle(b.w, jHipO))
+	x = append(x, float(cT))
+	x = append(x, float(cO))
+}
+
+var g_hipsign = 1.0
+var g_anksign = 1.0
+func tb_apply_sag(b, out, jHip, jKnee, jAnk) {
+	w3_set_joint_target(b.w, jHip, g_hipsign * out[0] * 1.1)
+	w3_set_joint_target(b.w, jKnee, (out[1] - 1.0) * 0.8)
+	w3_set_joint_target(b.w, jAnk, g_anksign * out[2] * 0.5)
+}
+
+func tb_arm_swing(b) {
+	sl := 0.0 - 0.55 * w3_joint_angle(b.w, b.jHipL)
+	if sl > 0.9 { sl = 0.9 }
+	if sl < 0.0 - 0.9 { sl = 0.0 - 0.9 }
+	sr := 0.0 - 0.55 * w3_joint_angle(b.w, b.jHipR)
+	if sr > 0.9 { sr = 0.9 }
+	if sr < 0.0 - 0.9 { sr = 0.0 - 0.9 }
+	w3_set_joint_target(b.w, b.jShL, sl)
+	w3_set_joint_target(b.w, b.jShR, sr)
+	w3_set_joint_target(b.w, b.jElbL, 0.35)
+	w3_set_joint_target(b.w, b.jElbR, 0.35)
+}
+
+func tb_rail(b, k) {
+	if k <= 0.0 { return }
+	dx := b.w.px[b.hip] - b.w.px[b.chest]
+	dz := b.w.pz[b.hip] - b.w.pz[b.chest]
+	b.w.px[b.chest] = b.w.px[b.chest] + k * 0.03 * dx
+	b.w.px[b.head] = b.w.px[b.head] + k * 0.045 * dx
+	b.w.pz[b.chest] = b.w.pz[b.chest] + k * 0.03 * dz
+	b.w.pz[b.head] = b.w.pz[b.head] + k * 0.045 * dz
+	cz := 0.12 * b.w.pz[b.hip]
+	b.w.pz[b.hip] = b.w.pz[b.hip] - k * cz
+	b.w.oz[b.hip] = b.w.oz[b.hip] - k * cz
+}
+
+type TBEp struct {
+	dist   float
+	drift  float
+	ticks  int
+	fell   bool
+	flight int
+	reason string
+}
+
+// latMode: 0 passive | 1 rail | 2 CoM+spine PD | 3 = 2 + capture-point
+func tb_episode(net, maxTicks, latMode, kp, kd, cH, cA, kr, capg) (ep) {
+	ep = TBEp{dist: 0.0, drift: 0.0, ticks: 0, fell: false, flight: 0, reason: "-"}
+	b := biped3_new()
+	dt := tb_dt()
+	x0 := b.w.px[b.hip]
+	z0 := b.w.pz[b.hip]
+	ph := 0.0
+	_, _, czPrev := w3_com(b.w)
+	rollPrev := biped3_roll(b)
+	t := 0
+	while t < maxTicks {
+		cl := tb_contact(b, b.toeL, b.heelIL, b.heelOL)
+		cr := tb_contact(b, b.toeR, b.heelIR, b.heelOR)
+		outL := net_forward(net, tb_inputs(b, ph, b.jHipL, b.jKneeL, b.jAnkL, b.jHipR, cl, cr))
+		outR := net_forward(net, tb_inputs(b, ph + pi(), b.jHipR, b.jKneeR, b.jAnkR, b.jHipL, cr, cl))
+		tb_apply_sag(b, outL, b.jHipL, b.jKneeL, b.jAnkL)
+		tb_apply_sag(b, outR, b.jHipR, b.jKneeR, b.jAnkR)
+		tb_arm_swing(b)
+		// ── frontal plane ──
+		if latMode == 0 || latMode == 1 {
+			w3_set_joint_target(b.w, b.jHipFL, 0.0)
+			w3_set_joint_target(b.w, b.jHipFR, 0.0)
+			w3_set_joint_target(b.w, b.jAnkFL, 0.0)
+			w3_set_joint_target(b.w, b.jAnkFR, 0.0)
+			if latMode == 1 { tb_rail(b, 1.0) }
+		} else {
+			_, comy, cz := w3_com(b.w)
+			czdot := (cz - czPrev) / dt
+			czPrev = cz
+			roll := biped3_roll(b)
+			rolldot := (roll - rollPrev) / dt
+			rollPrev = roll
+			u := kp * cz + kd * czdot
+			hf := cH * u
+			af := cA * u
+			// capture-point foot placement (mode 3): bias the SWING leg's frontal
+			// hip to plant its foot at the lateral capture point xi = cz + czdot/w.
+			if latMode == 3 {
+				om := sqrt(9.81 / comy)
+				xi := cz + czdot / om
+				// swing leg = the one NOT in contact; place its foot toward xi
+				if cl == 0 {
+					w3_set_joint_target(b.w, b.jHipFL, hf + capg * (xi - b.w.pz[b.ankleL]))
+					w3_set_joint_target(b.w, b.jHipFR, 0.0 - hf)
+				} else {
+					w3_set_joint_target(b.w, b.jHipFL, hf)
+					w3_set_joint_target(b.w, b.jHipFR, 0.0 - hf + capg * (xi - b.w.pz[b.ankleR]))
+				}
+			} else {
+				w3_set_joint_target(b.w, b.jHipFL, hf)
+				w3_set_joint_target(b.w, b.jHipFR, 0.0 - hf)
+			}
+			w3_set_joint_target(b.w, b.jAnkFL, af)
+			w3_set_joint_target(b.w, b.jAnkFR, 0.0 - af)
+			w3_set_joint_target(b.w, b.jSpineF, kr * (roll + 0.25 * rolldot))
+		}
+		// learned step timing (the 4th output), as in 2D
+		rate := 1.0 + 0.125 * (outL[3] + outR[3])
+		if rate < 0.8 { rate = 0.8 }
+		if rate > 1.3 { rate = 1.3 }
+		ph = ph + 2.0 * pi() * tb_hz() * dt * rate
+		biped3_step(b, dt)
+		if tb_contact(b, b.toeL, b.heelIL, b.heelOL) + tb_contact(b, b.toeR, b.heelIR, b.heelOR) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		t = t + 1
+		if biped3_fallen(b) {
+			ep.fell = true
+			ep.reason = "roll"
+			if absf3(biped3_pitch(b)) > 1.1 { ep.reason = "pitch" }
+			if b.w.py[b.chest] < 0.85 { ep.reason = "sag" }
+			break
+		}
+		if b.w.px[b.hip] - x0 > 12.5 { break }
+	}
+	ep.ticks = t
+	ep.dist = b.w.px[b.hip] - x0
+	ep.drift = absf3(b.w.pz[b.hip] - z0)
+}
+
+func fmt3(v) (s) {
+	neg := false
+	x := v
+	if x < 0.0 { neg = true  x = 0.0 - x }
+	w := int(floor(x * 1000.0 + 0.5))
+	fr := str(w % 1000)
+	while len(fr) < 3 { fr = "0" + fr }
+	s = str(w / 1000) + "." + fr
+	if neg { s = "-" + s }
+}
+
+func rep(tag, ep) {
+	st := "walked "
+	if ep.fell { st = "FELL(" + ep.reason + ")" }
+	println(tag + "  " + st + " dist=" + fmt3(ep.dist) + " drift=" + fmt3(ep.drift) + " flight=" + str(ep.flight) + " ticks=" + str(ep.ticks))
+}
+
+func main() {
+	net := net_load("ml/models/walker_slow.json")
+	if net.tinybrain != 1 {
+		println("walker_slow.json failed to load")
+		exit(1)
+	}
+	println("=== Test B: frozen 2D walker drives the 3D sagittal joints ===")
+	println("-- STEP 1 diagnostic: sagittal sign sweep (railed) --")
+	g_hipsign = 1.0  g_anksign = 1.0
+	rep("hip+ ank+ rail ", tb_episode(net, 600, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+	g_hipsign = 0.0 - 1.0  g_anksign = 1.0
+	rep("hip- ank+ rail ", tb_episode(net, 600, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+	g_hipsign = 1.0  g_anksign = 0.0 - 1.0
+	rep("hip+ ank- rail ", tb_episode(net, 600, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+	g_hipsign = 0.0 - 1.0  g_anksign = 0.0 - 1.0
+	rep("hip- ank- rail ", tb_episode(net, 600, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+	g_hipsign = 1.0  g_anksign = 1.0
+	println("-- STEP 2: analytic CoM+spine frontal PD (no rail) --")
+	rep("mode2 kr=-1.0  ", tb_episode(net, 600, 2, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0 - 1.0, 0.0))
+	rep("mode2 kr=+1.0  ", tb_episode(net, 600, 2, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 1.0, 0.0))
+	println("-- STEP 3: + lateral capture-point foot placement --")
+	rep("mode3 cap=1.5  ", tb_episode(net, 600, 3, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0 - 1.0, 1.5))
+	rep("mode3 cap=3.0  ", tb_episode(net, 600, 3, 3.0, 0.6, 0.0 - 1.5, 0.0 - 1.0, 0.0 - 1.0, 3.0))
+}
