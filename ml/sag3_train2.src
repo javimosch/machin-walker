@@ -7,11 +7,18 @@
 // Build: machin encode src/pbd3.src src/body3.src ml/vendor/tinybrain.src ml/vendor/evolve.src src/sag3.src ml/sag3_train2.src > /tmp/s3.mfl && machin run /tmp/s3.mfl
 
 func main() {
+	// the cadence sweep showed the heavier 3D rig walks at 0.40Hz (best seed
+	// ~8% flight vs 17% at 0.62Hz). CRITICAL: the 3D contact dynamics are
+	// chaotically sensitive to the last bits, so the seed must stay IN-MEMORY
+	// through search->clone->evolve (never round-trip params through truncated
+	// text — a hardcoded printed seed evaluates to a totally different gait).
+	g_s3_hz = 0.40
 	maxTicks := 480
 
 	// ── 1. find an open-loop forward gait on the 3D rig (railed) ──
 	tb_seed(42)
-	p, ps := s3_cpg_search(1400, 900, maxTicks)
+	p := []float{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+	ps := s3_cpg_search(1400, 900, maxTicks, p)
 	cep := s3_cpg_episode(p, 900)
 	println("{\"phase\":\"cpg\",\"score\":" + tb_fmt(ps) + ",\"dist\":" + tb_fmt(cep.dist) + ",\"fell\":" + str(cep.fell) + ",\"flight\":" + str(cep.flight) + ",\"ticks\":" + str(cep.ticks) + ",\"params\":" + tb_vec_json(p) + "}")
 	flush()

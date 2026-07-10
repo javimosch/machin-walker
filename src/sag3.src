@@ -205,46 +205,43 @@ func s3_cpg_score(p, maxTicks) (f) {
 	if ff > 0.12 { f = 0.2 * ep.dist }
 }
 
-// parametric CPG search — ranges constrained to WALKING (modest amplitudes so
-// the stance foot stays down; big hip/ankle amplitudes bound)
-func s3_cpg_search(samples, refines, maxTicks) (best, bs) {
-	best = []float{0.28, 0.0, 0.0 - 0.5, 1.5, 0.15, 0.0}
-	bs = s3_cpg_score(best, maxTicks)
+// parametric CPG search. Best is tracked in SCALARS (b0..b5) and written into
+// the caller's pre-allocated `out` slice via ELEMENT WRITES at the end — the
+// documented arena-safe way to cross the boundary. (Reassigning a `best` slice
+// near the per-iteration arena{} returned stale/corrupt values: the printed
+// params did not reproduce the reported flight.) Returns the best score.
+func s3_cpg_search(samples, refines, maxTicks, out) (bs) {
+	b0 := 0.28  b1 := 0.0  b2 := 0.0 - 0.5  b3 := 1.5  b4 := 0.15  b5 := 0.0
+	bs = 0.0
+	arena { bs = s3_cpg_score([]float{b0, b1, b2, b3, b4, b5}, maxTicks) }
 	i := 0
 	while i < samples {
-		p := []float{}
-		p = append(p, tb_randf_range(0.12, 0.45))
-		p = append(p, tb_randf_range(0.0 - 0.15, 0.15))
-		p = append(p, tb_randf_range(0.0 - 0.9, 0.0 - 0.2))
-		p = append(p, tb_randf_range(0.0, 6.28))
-		p = append(p, tb_randf_range(0.0, 0.28))
-		p = append(p, tb_randf_range(0.0, 6.28))
-		// arena-wrap the per-episode eval: on the MAIN goroutine, allocations in
-		// a loop are NOT reclaimed until the fn returns — 2300 unwrapped bipeds
-		// ballooned RAM and swap-thrashed rbm21. The float score crosses out; the
-		// param slice p stays outside (it may become `best`).
+		a0 := tb_randf_range(0.12, 0.45)
+		a1 := tb_randf_range(0.0 - 0.15, 0.15)
+		a2 := tb_randf_range(0.0 - 0.9, 0.0 - 0.2)
+		a3 := tb_randf_range(0.0, 6.28)
+		a4 := tb_randf_range(0.0, 0.28)
+		a5 := tb_randf_range(0.0, 6.28)
 		s := 0.0
-		arena {
-			s = s3_cpg_score(p, maxTicks)
-		}
-		if s > bs { bs = s  best = p }
+		arena { s = s3_cpg_score([]float{a0, a1, a2, a3, a4, a5}, maxTicks) }
+		if s > bs { bs = s  b0 = a0  b1 = a1  b2 = a2  b3 = a3  b4 = a4  b5 = a5 }
 		i = i + 1
 	}
 	i = 0
 	while i < refines {
-		p := []float{}
-		k := 0
-		while k < 6 {
-			p = append(p, best[k] + tb_randf_range(0.0 - 0.06, 0.06))
-			k = k + 1
-		}
+		a0 := b0 + tb_randf_range(0.0 - 0.06, 0.06)
+		a1 := b1 + tb_randf_range(0.0 - 0.06, 0.06)
+		a2 := b2 + tb_randf_range(0.0 - 0.06, 0.06)
+		a3 := b3 + tb_randf_range(0.0 - 0.06, 0.06)
+		a4 := b4 + tb_randf_range(0.0 - 0.06, 0.06)
+		a5 := b5 + tb_randf_range(0.0 - 0.06, 0.06)
 		s := 0.0
-		arena {
-			s = s3_cpg_score(p, maxTicks)
-		}
-		if s > bs { bs = s  best = p }
+		arena { s = s3_cpg_score([]float{a0, a1, a2, a3, a4, a5}, maxTicks) }
+		if s > bs { bs = s  b0 = a0  b1 = a1  b2 = a2  b3 = a3  b4 = a4  b5 = a5 }
 		i = i + 1
 	}
+	// element-write the winner into the caller's pre-allocated slice
+	out[0] = b0  out[1] = b1  out[2] = b2  out[3] = b3  out[4] = b4  out[5] = b5
 }
 
 // mean-of-2-noise-seeds fitness (robust; min-of-2 stalls exploration)

@@ -10,7 +10,8 @@
 
 func sweep_one(hz, samples, refines, maxTicks) {
 	g_s3_hz = hz
-	best, bs := s3_cpg_search(samples, refines, maxTicks)
+	best := []float{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+	bs := s3_cpg_search(samples, refines, maxTicks, best)
 	ep := s3_cpg_episode(best, 900)
 	tk := float(ep.ticks)
 	if tk < 1.0 { tk = 1.0 }
@@ -21,13 +22,22 @@ func sweep_one(hz, samples, refines, maxTicks) {
 	flush()
 }
 
+// verify the returned best reproduces its reported flight (catches the arena
+// aliasing bug: re-eval the PRINTED params in isolation)
+func verify_one(hz, params) {
+	g_s3_hz = hz
+	ep := s3_cpg_episode(params, 900)
+	tk := float(ep.ticks)
+	if tk < 1.0 { tk = 1.0 }
+	println("  verify hz=" + tb_fmt(hz) + " -> dist=" + tb_fmt(ep.dist) + " flight=" + tb_fmt(float(ep.flight) / tk * 100.0) + "%")
+}
+
 func main() {
-	println("=== cadence sweep: hunting a <8%-flight walking CPG seed on the 3D rig ===")
+	println("=== cadence sweep (arena-fixed): hunting a <8%-flight 3D walk seed ===")
 	tb_seed(42)
-	sweep_one(0.40, 700, 300, 480)
-	sweep_one(0.45, 700, 300, 480)
-	sweep_one(0.50, 700, 300, 480)
-	sweep_one(0.55, 700, 300, 480)
-	sweep_one(0.62, 700, 300, 480)
-	sweep_one(0.70, 700, 300, 480)
+	sweep_one(0.35, 500, 200, 480)
+	sweep_one(0.40, 500, 200, 480)
+	sweep_one(0.45, 500, 200, 480)
+	sweep_one(0.50, 500, 200, 480)
+	sweep_one(0.55, 500, 200, 480)
 }
