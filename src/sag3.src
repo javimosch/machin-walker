@@ -6,7 +6,10 @@
 // + fitness. Composes pbd3.src, body3.src, tinybrain.src.
 
 func s3_dt() (v) { v = 0.0166666 }
-func s3_hz() (v) { v = 0.62 }   // walking cadence — the 2D strict-walk unlock
+// gait cadence — a package global so the cadence sweep can scan it (the 2D
+// strict-walk unlock was 0.62Hz; the heavier 3D rig may want slower)
+var g_s3_hz = 0.62
+func s3_hz() (v) { v = g_s3_hz }
 
 // ── sagittal sensors, matching src/body.src (the controller's training units) ──
 func s3_vx(b, dt) (v) { v = (b.w.px[b.hip] - b.w.ox[b.hip]) / (dt / 6.0) }
