@@ -216,7 +216,14 @@ func s3_cpg_search(samples, refines, maxTicks) (best, bs) {
 		p = append(p, tb_randf_range(0.0, 6.28))
 		p = append(p, tb_randf_range(0.0, 0.28))
 		p = append(p, tb_randf_range(0.0, 6.28))
-		s := s3_cpg_score(p, maxTicks)
+		// arena-wrap the per-episode eval: on the MAIN goroutine, allocations in
+		// a loop are NOT reclaimed until the fn returns — 2300 unwrapped bipeds
+		// ballooned RAM and swap-thrashed rbm21. The float score crosses out; the
+		// param slice p stays outside (it may become `best`).
+		s := 0.0
+		arena {
+			s = s3_cpg_score(p, maxTicks)
+		}
 		if s > bs { bs = s  best = p }
 		i = i + 1
 	}
@@ -228,7 +235,10 @@ func s3_cpg_search(samples, refines, maxTicks) (best, bs) {
 			p = append(p, best[k] + tb_randf_range(0.0 - 0.06, 0.06))
 			k = k + 1
 		}
-		s := s3_cpg_score(p, maxTicks)
+		s := 0.0
+		arena {
+			s = s3_cpg_score(p, maxTicks)
+		}
 		if s > bs { bs = s  best = p }
 		i = i + 1
 	}
