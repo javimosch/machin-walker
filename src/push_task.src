@@ -1,0 +1,171 @@
+// machin-walker — src/push_task.src
+// PUSH-RECOVERY: take the certified strict walker and make it robust to
+// sagittal (in-plane, +-x) shoves. The controller is UNCHANGED — same
+// [13,16,4] net, same 13 inputs / 4 outputs as walk_task.src. Push recovery
+// is BLIND: the walker feels a shove only through its existing state senses
+// (vx, vy, pitch, pitch-rate), exactly the channels a shove perturbs. So the
+// same policy can learn to catch itself; we only add a disturbance to the
+// episode and a fitness that rewards surviving it while still walking +x.
+// Composes on top of pbd.src, body.src, walk_task.src, tinybrain.
+
+// Inject a sagittal shove: a horizontal velocity kick `dv` (m/s) to the upper
+// body (chest + head). Verlet stores velocity as (px - ox)/sdt with sdt=dt/6;
+// adding dv*sdt to px while leaving ox raises that to +dv m/s — a clean impulse
+// (the documented pbd injection trick: a bare px+=k is a per-substep
+// displacement ~= a velocity, not a teleport). Kicking the upper body (not the
+// planted hip) also applies a toppling moment — the real threat to balance.
+func push_apply(b, dv) {
+	sdt := walk_dt() / 6.0
+	d := dv * sdt
+	b.w.px[b.chest] = b.w.px[b.chest] + d
+	b.w.px[b.head] = b.w.px[b.head] + d
+}
+
+type PushEp struct {
+	dist float
+	ticks int
+	fell bool
+	pushes int
+	survived int
+	flight int
+	lowhip float
+}
+
+// run one push-recovery episode: the net walks +x at the current cadence while
+// scheduled shoves arrive every `everyTicks` (first at `firstPush`). Each shove
+// gets a seeded sign and a small magnitude jitter so the schedule can't be
+// memorized. A shove is "survived" if the biped is still upright ~0.8s later.
+func push_episode(n, maxTicks, noiseSeed, pushMag, firstPush, everyTicks) (ep) {
+	ep = PushEp{dist: 0.0, ticks: 0, fell: false, pushes: 0, survived: 0, flight: 0, lowhip: 0.0}
+	nz := 0.0
+	if noiseSeed > 0 {
+		nz = 0.01
+		if noiseSeed >= 50000 {
+			nz = 0.015
+		}
+	}
+	b := biped_new()
+	x0 := biped_hip_x(b)
+	ph := 0.0
+	t := 0
+	nextPush := firstPush
+	checkAt := 0 - 1
+	pushIdx := 0
+	while t < maxTicks {
+		ph = walk_ctrl_step(n, b, ph, nz, noiseSeed, t)
+		biped_step(b, walk_dt())
+		if t == nextPush {
+			hs := walk_noise(noiseSeed + 900, pushIdx, 0)
+			sgn := 1.0
+			if hs < 0.0 {
+				sgn = 0.0 - 1.0
+			}
+			hm := walk_noise(noiseSeed + 901, pushIdx, 1)
+			mag := pushMag * (0.75 + 0.35 * absf2(hm))
+			push_apply(b, sgn * mag)
+			ep.pushes = ep.pushes + 1
+			checkAt = t + 48
+			nextPush = nextPush + everyTicks
+			pushIdx = pushIdx + 1
+		}
+		if checkAt >= 0 {
+			if t == checkAt {
+				if biped_fallen(b) == false {
+					ep.survived = ep.survived + 1
+				}
+				checkAt = 0 - 1
+			}
+		}
+		if biped_contact_l(b) + biped_contact_r(b) == 0 {
+			ep.flight = ep.flight + 1
+		}
+		h := biped_hip_h(b)
+		if h < 0.82 {
+			ep.lowhip = ep.lowhip + (0.82 - h)
+		}
+		t = t + 1
+		if biped_fallen(b) {
+			ep.fell = true
+			break
+		}
+	}
+	ep.ticks = t
+	ep.dist = biped_hip_x(b) - x0
+}
+
+// fitness for one push episode: keep walking forward AND survive the shoves.
+// Each survived shove is worth a lot (that IS the deliverable); a fall salvages
+// only a quarter (dive-then-collapse doesn't pay). Still shaped like a WALK —
+// crouch penalized, and sustained flight past 6% (a couple of recovery steps is
+// fine, hopping away is not) attenuates the score.
+func push_ep_score(ep, maxTicks) (f) {
+	tk := float(ep.ticks)
+	if tk < 1.0 {
+		tk = 1.0
+	}
+	d := ep.dist
+	if d > 12.0 {
+		d = 12.0
+	}
+	if ep.fell {
+		f = 0.25 * d
+	} else {
+		f = d + 1.0
+	}
+	f = f + 1.5 * float(ep.survived)
+	f = f - 2.0 * ep.lowhip / tk
+	ff := float(ep.flight) / tk
+	if ff > 0.06 {
+		if f > 0.0 {
+			f = f / (1.0 + 8.0 * (ff - 0.06))
+		}
+	}
+}
+
+// robust fitness: two schedules + a worst-of-two harder pair (all at the level's
+// magnitude). A policy must recover under DIFFERENT shove timings/signs, not one
+// memorized sequence — the same anti-overfit lesson as the walk gate seeds.
+func push_fitness(n, maxTicks, base, pushMag) (f) {
+	s1 := push_ep_score(push_episode(n, maxTicks, base, pushMag, 120, 150), maxTicks)
+	s2 := push_ep_score(push_episode(n, maxTicks, base + 61, pushMag, 135, 165), maxTicks)
+	z := push_ep_score(push_episode(n, maxTicks, base + 34, pushMag, 110, 140), maxTicks)
+	z2 := push_ep_score(push_episode(n, maxTicks, base + 51, pushMag, 145, 155), maxTicks)
+	if z2 < z {
+		z = z2
+	}
+	f = (s1 + s2 + 2.0 * z) / 4.0
+}
+
+// the PUSH GATE: reloaded artifact, 5 unseen seeds / unseen schedule at the top
+// magnitude. Returns worst survive-fraction, total falls, worst flight-fraction,
+// worst forward distance — the walker must take the shoves AND keep walking.
+func push_gate(n, maxTicks, pushMag) (minSurvFrac, falls, maxFF, minDist) {
+	minSurvFrac = 1.0
+	falls = 0
+	maxFF = 0.0
+	minDist = 1000000.0
+	for _, sd := range []int{999, 777, 12345, 31337, 2026} {
+		ep := push_episode(n, maxTicks, sd, pushMag, 118, 152)
+		if ep.fell {
+			falls = falls + 1
+		}
+		sf := 1.0
+		if ep.pushes > 0 {
+			sf = float(ep.survived) / float(ep.pushes)
+		}
+		if sf < minSurvFrac {
+			minSurvFrac = sf
+		}
+		if ep.dist < minDist {
+			minDist = ep.dist
+		}
+		tk := float(ep.ticks)
+		if tk < 1.0 {
+			tk = 1.0
+		}
+		fr := float(ep.flight) / tk
+		if fr > maxFF {
+			maxFF = fr
+		}
+	}
+}

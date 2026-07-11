@@ -10,6 +10,15 @@ cat src/pbd.src src/body.src src/walk_task.src ml/vendor/tinybrain.src web/walke
 cp web/index.html docs/index.html
 cp ml/models/walker.json docs/walker.json
 cp ml/models/walker_slow.json docs/walker_slow.json
+
+# push-recovery demo (shove-robust walk)
+if [ -f ml/models/walker_push.json ]; then
+  cat src/pbd.src src/body.src src/walk_task.src src/push_task.src ml/vendor/tinybrain.src web/push_wasm.src | "$MACHIN" encode /dev/stdin > /tmp/push_wasm.mfl
+  "$MACHIN" build /tmp/push_wasm.mfl --target wasm -o docs/push.wasm
+  cp web/push.html docs/push.html
+  cp ml/models/walker_push.json docs/walker_push.json
+  echo "push-recovery demo shipped: docs/push.html"
+fi
 if [ -f ml/models/walker3.json ]; then
   cat src/pbd3.src src/body3.src src/walk3_task.src ml/vendor/tinybrain.src web/walker3_wasm.src | "$MACHIN" encode /dev/stdin > /tmp/walker3_wasm.mfl
   "$MACHIN" build /tmp/walker3_wasm.mfl --target wasm -o docs/walker3.wasm

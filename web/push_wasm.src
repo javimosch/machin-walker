@@ -1,0 +1,162 @@
+// machin-walker — web/push_wasm.src
+// Browser build of the PUSH-RECOVERY demo: the same pbd + body + walk_task +
+// push_task modules compiled to wasm. The walker (walker_push.json) walks while
+// auto-shoves arrive; the JS host also calls shove() on arrow keys / buttons.
+// A shove is a sagittal velocity impulse to the torso (push_apply) — the net
+// feels it only through its senses and recovers. JS only draws. Build: web/build.sh
+
+var g_net = Net{}
+var g_b = Biped{}
+var g_t = 0
+var g_x0 = 0.0
+var g_ph = 0.0
+var g_booted = 0
+var g_mag = 1.7
+var g_shoves = 0
+var g_recovered = 0
+var g_pending = 0 - 1
+var g_lastShove = 0 - 1000
+var g_lastDir = 0.0
+var g_nextAuto = 150
+
+export func buf(n) (p) {
+	p = alloc(n + 1)
+}
+
+export func set_hz(h) {
+	g_hz = float(h) / 100.0
+}
+
+// shove magnitude in cm/s (170 = 1.7 m/s)
+export func set_mag(m) {
+	g_mag = float(m) / 100.0
+}
+
+func reset_state() {
+	g_b = biped_new()
+	g_x0 = biped_hip_x(g_b)
+	g_t = 0
+	g_ph = 0.0
+	g_shoves = 0
+	g_recovered = 0
+	g_pending = 0 - 1
+	g_lastShove = 0 - 1000
+	g_lastDir = 0.0
+	g_nextAuto = 150
+}
+
+export func boot(p) (ok) {
+	src := ptr_str(p)
+	free(p)
+	g_net = parse(src, Net{})
+	ok = 0
+	if g_net.tinybrain != 1 {
+		return
+	}
+	reset_state()
+	g_booted = 1
+	ok = 1
+}
+
+export func restart() {
+	reset_state()
+}
+
+func do_shove(dir) {
+	push_apply(g_b, dir * g_mag)
+	g_shoves = g_shoves + 1
+	g_lastShove = g_t
+	g_lastDir = dir
+	g_pending = g_t + 48
+}
+
+// manual shove from JS: dir > 0 fore (+x), dir < 0 aft (-x)
+export func shove(dir) {
+	if g_booted == 0 {
+		return
+	}
+	if biped_fallen(g_b) {
+		return
+	}
+	d := 1.0
+	if dir < 0 {
+		d = 0.0 - 1.0
+	}
+	do_shove(d)
+}
+
+export func tick() {
+	if g_booted == 0 {
+		return
+	}
+	if biped_fallen(g_b) {
+		g_t = g_t + 1
+		if g_t % 90 == 0 {
+			restart()
+		}
+		return
+	}
+	if g_pending >= 0 {
+		if g_t >= g_pending {
+			g_recovered = g_recovered + 1
+			g_pending = 0 - 1
+		}
+	}
+	if g_t >= g_nextAuto {
+		dir := 1.0
+		if g_shoves % 2 == 1 {
+			dir = 0.0 - 1.0
+		}
+		do_shove(dir)
+		g_nextAuto = g_t + 150
+	}
+	g_ph = walk_ctrl_step(g_net, g_b, g_ph, 0.0, 0, g_t)
+	biped_step(g_b, walk_dt())
+	g_t = g_t + 1
+}
+
+export func pt_x(i) (v) {
+	v = g_b.w.px[i]
+}
+
+export func pt_y(i) (v) {
+	v = g_b.w.py[i]
+}
+
+export func walk_dist() (v) {
+	v = biped_hip_x(g_b) - g_x0
+}
+
+export func walk_speed() (v) {
+	v = biped_vx(g_b, walk_dt())
+}
+
+export func walk_fell() (v) {
+	v = 0
+	if biped_fallen(g_b) {
+		v = 1
+	}
+}
+
+export func p_shoves() (v) {
+	v = g_shoves
+}
+
+export func p_recovered() (v) {
+	v = g_recovered
+}
+
+// ticks since the last shove (for the JS impulse-flash cue)
+export func p_since() (v) {
+	v = g_t - g_lastShove
+}
+
+export func p_lastdir() (v) {
+	v = 0
+	if g_lastDir > 0.0 {
+		v = 1
+	}
+	if g_lastDir < 0.0 {
+		v = 0 - 1
+	}
+}

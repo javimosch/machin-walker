@@ -1,0 +1,49 @@
+// ml/push_probe.src — calibrate the shove magnitude span. Loads the certified
+// strict walker (walker_slow.json) and, WITHOUT any training, measures how it
+// handles sagittal shoves of increasing strength. Prints survive-fraction /
+// falls / distance per magnitude so the trainer's curriculum ramps across the
+// range that actually threatens balance (too weak = trivial, too strong =
+// unrecoverable-for-anyone). Pure diagnostic, runs in a few seconds locally.
+
+func main() {
+	g_hz = 0.62
+	maxTicks := 1200
+
+	n := net_load("ml/models/walker_slow.json")
+	if n.tinybrain != 1 {
+		println("{\"error\":\"walker_slow.json not loaded\"}")
+		return
+	}
+	println("{\"probe\":\"push magnitude sweep\",\"base\":\"walker_slow.json\",\"maxTicks\":" + str(maxTicks) + "}")
+	flush()
+
+	// baseline: no shove at all — confirm the loaded walker still walks here
+	base := push_episode(n, maxTicks, 999, 0.0, 100000, 100000)
+	println("{\"mag\":0.0,\"dist\":" + tb_fmt(base.dist) + ",\"fell\":" + str(base.fell) + ",\"flight_frac\":" + tb_fmt(float(base.flight) / float(base.ticks)) + "}")
+	flush()
+
+	for _, mag := range []float{0.4, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.0} {
+		// two unseen schedules per magnitude, report the worse
+		wSurv := 1.0
+		nFell := 0
+		wDist := 1000000.0
+		for _, sd := range []int{4001, 4002, 4003} {
+			ep := push_episode(n, maxTicks, sd, mag, 118, 152)
+			sf := 1.0
+			if ep.pushes > 0 {
+				sf = float(ep.survived) / float(ep.pushes)
+			}
+			if sf < wSurv {
+				wSurv = sf
+			}
+			if ep.fell {
+				nFell = nFell + 1
+			}
+			if ep.dist < wDist {
+				wDist = ep.dist
+			}
+		}
+		println("{\"mag\":" + tb_fmt(mag) + ",\"worst_surv_frac\":" + tb_fmt(wSurv) + ",\"falls_of_3\":" + str(nFell) + ",\"worst_dist\":" + tb_fmt(wDist) + "}")
+		flush()
+	}
+}

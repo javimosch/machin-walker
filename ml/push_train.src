@@ -1,0 +1,160 @@
+// ml/push_train.src — PUSH-RECOVERY trainer. Warm-starts from the certified
+// strict walker (walker_slow.json) and fine-tunes it, with the PROVEN GA
+// pipeline (evolve_run + gated convergence), to survive sagittal shoves. The
+// curriculum ramps shove magnitude UP (the mirror of the walk harness annealing
+// DOWN): the untrained walker absorbs ~1.0 m/s but collapses by ~1.3 m/s
+// (measured, push_probe) — training pushes that ceiling to 2.0 m/s while it
+// keeps walking +x. Same [13,16,4] net, blind recovery (no new senses).
+// Writes STATUS.json each round (elapsed/mean/ETA) for a non-blocking check.
+
+func PUSH_ROUND_BUDGET() (v) { v = 40 }   // ~30 curriculum + gate, for the ETA
+
+var g_t0 = 0
+
+func status_write(phase, roundNo, best, roundsDone, extra) {
+	elapsed := float(now_ms() - g_t0) / 1000.0
+	mean := elapsed
+	if roundsDone > 0 {
+		mean = elapsed / float(roundsDone)
+	}
+	rem := PUSH_ROUND_BUDGET() - roundsDone
+	if rem < 0 {
+		rem = 0
+	}
+	eta := mean * float(rem)
+	s := "{\"phase\":\"" + phase + "\",\"round\":" + str(roundNo) + ",\"best\":" + tb_fmt(best) + ",\"elapsed_s\":" + tb_fmt(elapsed) + ",\"mean_round_s\":" + tb_fmt(mean) + ",\"eta_remaining_s\":" + tb_fmt(eta) + "," + extra + "}"
+	write_file("STATUS.json", s)
+	println(s)
+	flush()
+}
+
+// the ramping shove ladder (m/s). Base walker fails ~1.3; the top rung is well
+// past that — a genuine robustness gain, not a re-derivation of the walk.
+func push_ladder() (v) { v = []float{0.8, 1.1, 1.4, 1.7, 2.0} }
+
+func push_cfg(base, hard) (cfg) {
+	cfg = evolve_cfg_default()
+	cfg.pop = 96
+	cfg.generations = 120
+	cfg.elite = 8
+	cfg.mut_rate = 0.12
+	cfg.mut_sigma = 0.12
+	if hard {
+		cfg.generations = 170
+		cfg.mut_sigma = 0.07
+	}
+	cfg.warm_start = true
+	cfg.workers = 10
+	cfg.target_fitness = 0.0
+	cfg.print_every = 0
+}
+
+func main() {
+	g_hz = 0.62
+	g_t0 = now_ms()
+	maxTicks := 1200
+
+	// resume tier
+	prevH := net_load("ml/models/walker_push_h.json")
+	if prevH.tinybrain == 1 && prevH.topology[0] == 13 && prevH.topology[2] == 4 {
+		status_write("resume", 0, 0.0, 0, "\"note\":\"from walker_push_h.json\"")
+		push_curriculum(prevH, maxTicks, 0)
+		return
+	}
+
+	// warm-start from the certified strict walker
+	n := net_load("ml/models/walker_slow.json")
+	if n.tinybrain != 1 || n.topology[0] != 13 || n.topology[2] != 4 {
+		status_write("error", 0, 0.0, 0, "\"note\":\"walker_slow.json missing/incompatible\"")
+		return
+	}
+	status_write("seed", 0, 0.0, 0, "\"note\":\"warm-start from walker_slow.json\"")
+	push_curriculum(n, maxTicks, 0)
+}
+
+func push_curriculum(n, maxTicks, startRound) {
+	ladder := push_ladder()
+	r := 0
+	attempt := 0
+	seedTick := 0
+	totalRounds := startRound
+	while r < len(ladder) {
+		mag := ladder[r]
+		base := 3000 + seedTick * 500
+		hard := mag >= 1.4
+		fit := func(nn) {
+			return push_fitness(nn, maxTicks, base, mag)
+		}
+		cfg := push_cfg(base, hard)
+		bestF := 0.0
+		arena {
+			res, champ := evolve_run(n, fit, cfg)
+			net_save(champ, "ml/models/walker_push_try.json")
+			bestF = res.best_fitness
+		}
+		n = net_load("ml/models/walker_push_try.json")
+		dep := push_episode(n, maxTicks, base + 99, mag, 118, 152)
+		tk := float(dep.ticks)
+		if tk < 1.0 {
+			tk = 1.0
+		}
+		sf := 1.0
+		if dep.pushes > 0 {
+			sf = float(dep.survived) / float(dep.pushes)
+		}
+		totalRounds = totalRounds + 1
+		status_write("curriculum", totalRounds, bestF, totalRounds, "\"level\":" + str(r) + ",\"attempt\":" + str(attempt) + ",\"push_mag\":" + tb_fmt(mag) + ",\"diag\":{\"dist\":" + tb_fmt(dep.dist) + ",\"surv_frac\":" + tb_fmt(sf) + ",\"flight_frac\":" + tb_fmt(float(dep.flight) / tk) + ",\"fell\":" + str(dep.fell) + "}")
+		seedTick = seedTick + 1
+		if totalRounds - startRound > 30 {
+			status_write("curriculum", totalRounds, bestF, totalRounds, "\"note\":\"budget exhausted\"")
+			break
+		}
+		if dep.fell == false && sf >= 0.8 && dep.dist >= 6.0 {
+			net_save(n, "ml/models/walker_push_h.json")
+			r = r + 1
+			attempt = 0
+		} else {
+			attempt = attempt + 1
+			if attempt > 5 {
+				attempt = 0
+				prev := net_load("ml/models/walker_push_h.json")
+				if prev.tinybrain == 1 {
+					n = prev
+				}
+				if r > 0 {
+					r = r - 1
+				}
+			}
+		}
+	}
+
+	// gate rounds: reloaded artifact, 5 unseen seeds / unseen schedule at the TOP
+	// magnitude — 0 falls, survives >=85% of shoves, still walks >=7m
+	topMag := ladder[len(ladder) - 1]
+	round := 0
+	while round < 8 {
+		base := 50000 + round * 1000
+		fit := func(nn) {
+			return push_fitness(nn, maxTicks, base, topMag)
+		}
+		cfg := push_cfg(base, true)
+		cfg.generations = 200
+		gBest := 0.0
+		arena {
+			res, champ := evolve_run(n, fit, cfg)
+			net_save(champ, "ml/models/walker_push.json")
+			gBest = res.best_fitness
+		}
+		m := net_load("ml/models/walker_push.json")
+		minSurvFrac, falls, maxFF, minDist := push_gate(m, maxTicks, topMag)
+		totalRounds = totalRounds + 1
+		status_write("gate", totalRounds, gBest, totalRounds, "\"gate_round\":" + str(round) + ",\"push_mag\":" + tb_fmt(topMag) + ",\"gate\":{\"min_surv_frac\":" + tb_fmt(minSurvFrac) + ",\"falls\":" + str(falls) + ",\"max_flight_frac\":" + tb_fmt(maxFF) + ",\"min_dist\":" + tb_fmt(minDist) + "}")
+		if falls == 0 && minSurvFrac >= 0.85 && minDist >= 7.0 {
+			status_write("done", totalRounds, gBest, totalRounds, "\"status\":\"PUSH GATE PASSED\",\"artifact\":\"ml/models/walker_push.json\",\"top_mag\":" + tb_fmt(topMag))
+			return
+		}
+		n = m
+		round = round + 1
+	}
+	status_write("done", totalRounds, 0.0, totalRounds, "\"status\":\"push gate not passed\"")
+}
