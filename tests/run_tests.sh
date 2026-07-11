@@ -9,3 +9,7 @@ cat src/pbd.src src/body.src src/walk_task.src ml/vendor/tinybrain.src tests/wal
 "$MACHIN" run /tmp/walker_t2.mfl
 cat src/pbd3.src tests/pbd3_test.src | "$MACHIN" encode /dev/stdin > /tmp/walker_t3.mfl
 "$MACHIN" run /tmp/walker_t3.mfl
+if [ -f ml/models/walker_push.json ]; then
+  cat src/pbd.src src/body.src src/walk_task.src src/push_task.src ml/vendor/tinybrain.src tests/push_test.src | "$MACHIN" encode /dev/stdin > /tmp/walker_t4.mfl
+  "$MACHIN" run /tmp/walker_t4.mfl
+fi

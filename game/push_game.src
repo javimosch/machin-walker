@@ -1,0 +1,213 @@
+// machin-walker — game/push_game.src
+// The PUSH-RECOVERY view: the same learned walker (walker_push.json), now
+// getting SHOVED. Auto-shoves arrive every ~2.5 s (alternating fore/aft) at a
+// magnitude the untrained walker can't survive; interactive shoves on the
+// arrow keys. A shove is a sagittal velocity impulse to the torso (push_apply,
+// src/push_task.src) — the walker feels it only through its existing senses and
+// catches itself. Build: ./build_push.sh   Run from repo root: ./push-game
+// Self-captures walker_push_shot_*.png for verification.
+
+extern "raylib" {
+	header "raylib.h"
+	link "raylib" link "GL" link "m" link "pthread" link "dl" link "rt" link "X11"
+	cstruct Color { r u8 g u8 b u8 a u8 }
+	cstruct Vector3 { x f32 y f32 z f32 }
+	cstruct Camera3D { position Vector3 target Vector3 up Vector3 fovy f32 projection i32 }
+	fn InitWindow(i32, i32, string)
+	fn SetTargetFPS(i32)
+	fn WindowShouldClose() bool
+	fn BeginDrawing()
+	fn EndDrawing()
+	fn ClearBackground(Color)
+	fn CloseWindow()
+	fn BeginMode3D(Camera3D)
+	fn EndMode3D()
+	fn DrawCylinderEx(Vector3, Vector3, f32, f32, i32, Color)
+	fn DrawSphere(Vector3, f32, Color)
+	fn DrawCube(Vector3, f32, f32, f32, Color)
+	fn DrawLine3D(Vector3, Vector3, Color)
+	fn DrawText(string, i32, i32, i32, Color)
+	fn IsKeyDown(i32) bool
+	fn TakeScreenshot(string)
+}
+
+func v3of(b, i, z) (v) {
+	v = Vector3{b.w.px[i], b.w.py[i], z}
+}
+
+func limb(a, bpt, r1, r2, col) {
+	DrawCylinderEx(a, bpt, r1, r2, 8, col)
+}
+
+func draw_walker(b) {
+	skin := Color{225, 200, 170, 255}
+	shirt := Color{70, 130, 200, 255}
+	pants := Color{60, 70, 90, 255}
+	shoe := Color{40, 40, 45, 255}
+	zL := -0.09
+	zR := 0.09
+	zAL := -0.22
+	zAR := 0.22
+	hip := v3of(b, b.hip, 0.0)
+	chest := v3of(b, b.chest, 0.0)
+	head := v3of(b, b.head, 0.0)
+	limb(hip, chest, 0.09, 0.11, shirt)
+	DrawCylinderEx(Vector3{b.w.px[b.hip], b.w.py[b.hip], zL}, Vector3{b.w.px[b.hip], b.w.py[b.hip], zR}, 0.07, 0.07, 8, pants)
+	DrawCylinderEx(Vector3{b.w.px[b.chest], b.w.py[b.chest], zAL}, Vector3{b.w.px[b.chest], b.w.py[b.chest], zAR}, 0.06, 0.06, 8, shirt)
+	DrawSphere(head, 0.11, skin)
+	limb(chest, head, 0.045, 0.045, skin)
+	limb(Vector3{b.w.px[b.hip], b.w.py[b.hip], zL}, v3of(b, b.kneeL, zL), 0.065, 0.05, pants)
+	limb(v3of(b, b.kneeL, zL), v3of(b, b.ankleL, zL), 0.05, 0.035, pants)
+	limb(v3of(b, b.ankleL, zL), v3of(b, b.toeL, zL), 0.035, 0.03, shoe)
+	limb(v3of(b, b.ankleL, zL), v3of(b, b.heelL, zL), 0.035, 0.03, shoe)
+	limb(Vector3{b.w.px[b.hip], b.w.py[b.hip], zR}, v3of(b, b.kneeR, zR), 0.065, 0.05, pants)
+	limb(v3of(b, b.kneeR, zR), v3of(b, b.ankleR, zR), 0.05, 0.035, pants)
+	limb(v3of(b, b.ankleR, zR), v3of(b, b.toeR, zR), 0.035, 0.03, shoe)
+	limb(v3of(b, b.ankleR, zR), v3of(b, b.heelR, zR), 0.035, 0.03, shoe)
+	limb(Vector3{b.w.px[b.chest], b.w.py[b.chest], zAL}, v3of(b, b.elbowL, zAL), 0.045, 0.04, shirt)
+	limb(v3of(b, b.elbowL, zAL), v3of(b, b.handL, zAL), 0.04, 0.03, skin)
+	limb(Vector3{b.w.px[b.chest], b.w.py[b.chest], zAR}, v3of(b, b.elbowR, zAR), 0.045, 0.04, shirt)
+	limb(v3of(b, b.elbowR, zAR), v3of(b, b.handR, zAR), 0.04, 0.03, skin)
+	DrawSphere(v3of(b, b.kneeL, zL), 0.05, pants)
+	DrawSphere(v3of(b, b.kneeR, zR), 0.05, pants)
+}
+
+func fmt2w(v) (s) {
+	neg := false
+	if v < 0.0 {
+		neg = true
+		v = -v
+	}
+	w := int(floor(v * 100.0 + 0.5))
+	frac := str(w % 100)
+	if len(frac) == 1 {
+		frac = "0" + frac
+	}
+	s = str(w / 100) + "." + frac
+	if neg {
+		s = "-" + s
+	}
+}
+
+func main() {
+	src := read_file("ml/models/walker_push.json")
+	if len(src) == 0 {
+		src = read_file("ml/models/walker_push_h.json")
+	}
+	if len(src) == 0 {
+		println("no push artifact — train ml/push_train.src first")
+		exit(1)
+	}
+	g_hz = 0.62
+	n := parse(src, Net{})
+	if n.tinybrain != 1 {
+		println("bad artifact")
+		exit(1)
+	}
+	mag := 1.7        // shove magnitude (m/s); untrained walker collapses by ~1.3
+	b := biped_new()
+	x0 := biped_hip_x(b)
+	InitWindow(1100, 700, "machin-walker - shove-robust: the walker recovers from pushes")
+	SetTargetFPS(60)
+	hud := Color{235, 235, 235, 255}
+	gph := 0.0
+	t := 0
+	shoves := 0
+	recovered := 0
+	pending := 0 - 1
+	lastShove := 0 - 1000
+	lastDir := 0.0
+	nextAuto := 150
+	prevKeyL := false
+	prevKeyR := false
+	for WindowShouldClose() == false {
+		if biped_fallen(b) == false {
+			// survival bookkeeping (counted ~0.8s after a shove)
+			if pending >= 0 {
+				if t >= pending {
+					recovered = recovered + 1
+					pending = 0 - 1
+				}
+			}
+			// interactive shoves (edge-triggered): LEFT = aft, RIGHT = fore
+			kl := IsKeyDown(263)
+			kr := IsKeyDown(262)
+			manual := false
+			dir := 1.0
+			if kl && prevKeyL == false {
+				dir = 0.0 - 1.0
+				manual = true
+			}
+			if kr && prevKeyR == false {
+				dir = 1.0
+				manual = true
+			}
+			prevKeyL = kl
+			prevKeyR = kr
+			// auto shove every ~2.5s, alternating direction
+			if manual == false {
+				if t >= nextAuto {
+					dir = 1.0
+					if shoves % 2 == 1 {
+						dir = 0.0 - 1.0
+					}
+					manual = true
+					nextAuto = t + 150
+				}
+			}
+			if manual {
+				push_apply(b, dir * mag)
+				shoves = shoves + 1
+				lastShove = t
+				lastDir = dir
+				pending = t + 48
+			}
+			gph = walk_ctrl_step(n, b, gph, 0.0, 0, t)
+			biped_step(b, walk_dt())
+			t = t + 1
+		}
+		hx := biped_hip_x(b)
+		BeginDrawing()
+		ClearBackground(Color{20, 24, 30, 255})
+		cam := Camera3D{Vector3{hx - 1.6, 1.7, 3.2}, Vector3{hx + 0.4, 0.9, 0.0}, Vector3{0.0, 1.0, 0.0}, 55.0, 0}
+		BeginMode3D(cam)
+		gx := floor(hx)
+		gi := -14
+		while gi <= 14 {
+			DrawLine3D(Vector3{gx + float(gi) * 0.5, 0.0, -4.0}, Vector3{gx + float(gi) * 0.5, 0.0, 4.0}, Color{55, 62, 74, 255})
+			gi = gi + 1
+		}
+		gz := -8
+		while gz <= 8 {
+			DrawLine3D(Vector3{gx - 7.0, 0.0, float(gz) * 0.5}, Vector3{gx + 7.0, 0.0, float(gz) * 0.5}, Color{55, 62, 74, 255})
+			gz = gz + 1
+		}
+		// a red impulse bar at the torso right after a shove (visual cue)
+		if t - lastShove < 22 {
+			cy := b.w.py[b.chest]
+			ar := lastDir * 0.6
+			DrawCylinderEx(Vector3{b.w.px[b.chest], cy, 0.0}, Vector3{b.w.px[b.chest] + ar, cy, 0.0}, 0.05, 0.02, 8, Color{235, 90, 70, 255})
+		}
+		draw_walker(b)
+		EndMode3D()
+		dist := hx - x0
+		DrawText("machin-walker: SHOVE-ROBUST WALK — same tinybrain net, trained to recover from sagittal pushes", 20, 16, 18, hud)
+		DrawText("shoves " + str(shoves) + "   recovered " + str(recovered) + "   at " + fmt2w(mag) + " m/s   (arrow keys to shove; auto every 2.5s)", 20, 44, 22, Color{120, 220, 130, 255})
+		DrawText("distance " + fmt2w(dist) + " m", 20, 74, 20, Color{150, 200, 230, 255})
+		if t - lastShove < 30 {
+			lbl := "SHOVE ->"
+			if lastDir < 0.0 {
+				lbl = "<- SHOVE"
+			}
+			DrawText(lbl, 500, 120, 40, Color{235, 90, 70, 255})
+		}
+		if biped_fallen(b) {
+			DrawText("fell", 20, 104, 22, Color{230, 110, 90, 255})
+		}
+		EndDrawing()
+		if t == 200 || t == 340 || t == 620 {
+			TakeScreenshot("walker_push_shot_" + str(t) + ".png")
+		}
+	}
+	CloseWindow()
+}

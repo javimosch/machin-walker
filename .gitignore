@@ -7,3 +7,7 @@ walker_shot_*.png
 latbal-game
 latbal.mfl
 latbal_shot_*.png
+
+/push-game
+push.mfl
+walker_push_shot_*.png

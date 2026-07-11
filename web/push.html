@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>machin-walker — a tiny neural net learned to walk (and run)</title>
+<title>machin-walker — shove-robust: the walker recovers from pushes</title>
 <style>
   body { margin: 0; background: #14161a; color: #eaeaea; font: 15px/1.5 system-ui, sans-serif;
          display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 12px; }
@@ -13,91 +13,78 @@
   canvas { max-width: 100%; height: auto; border-radius: 8px; }
   #status { color: #8b93a1; font-size: 13px; }
   .facts { max-width: 760px; color: #8b93a1; font-size: 13px; text-align: center; }
+  button { padding: 6px 22px; border-radius: 6px; border: 1px solid #4a5568; background: #232a36;
+           color: #cbd5e0; cursor: pointer; font-size: 15px; }
+  button:hover { background: #2b3444; }
 </style>
 </head>
 <body>
-<h1>machin-walker</h1>
-<p>A <a href="https://github.com/javimosch/tinybrain">tinybrain</a> neural network (13 sensors → 16 → 4,
-one ~4.7&nbsp;KB JSON artifact) drives six torque-limited joints — and its own gait clock — of a
-1.75&nbsp;m / 70&nbsp;kg biped through a rigorous pure-<a href="https://github.com/javimosch/machin">machin</a>
-physics simulation, compiled to WebAssembly. Internal joint torques only — no balance assist, no
-velocity caps, momentum-conserving motors, Coulomb friction. It learned <b>two certified gaits</b>: a strict
-<b>walk</b> (0.54&nbsp;m/s, 44% double-support, under 8% airborne) and a <b>run</b> (~1.5&nbsp;m/s,
-flight-phase) — each with zero falls on noise seeds never seen in training. Toggle below.
-The physics runs in your browser; JS only draws.</p>
+<h1>machin-walker — push recovery</h1>
+<p>The <b>same</b> <a href="https://github.com/javimosch/tinybrain">tinybrain</a> walker (13 sensors → 16 → 4),
+warm-started from the certified walk and fine-tuned to survive <b>sagittal shoves</b>. Recovery is
+<b>blind</b> — no new sensors: a shove is a velocity impulse to the torso, and the net feels it only through
+its existing balance senses (torso pitch, pitch-rate, hip velocity), then catches itself. It's shoved at
+<b>1.7&nbsp;m/s</b> every couple of seconds, fore and aft — the untrained walker collapses by ~1.3&nbsp;m/s.
+Physics in WebAssembly; JS only draws. <b>Shove it yourself</b> with the buttons or arrow keys.</p>
 <div style="display:flex;gap:10px">
-  <button id="bwalk" style="padding:6px 22px;border-radius:6px;border:1px solid #4a5568;background:#2b6c3f;color:#fff;cursor:pointer">walk</button>
-  <button id="brun" style="padding:6px 22px;border-radius:6px;border:1px solid #4a5568;background:#232a36;color:#cbd5e0;cursor:pointer">run</button>
-  <a href="push.html" style="padding:6px 22px;border-radius:6px;border:1px solid #4a5568;background:#232a36;color:#cbd5e0;text-decoration:none">push recovery →</a>
+  <button id="baft">&larr; shove</button>
+  <button id="bfore">shove &rarr;</button>
 </div>
 <canvas id="cv" width="1100" height="700"></canvas>
 <div id="status">loading…</div>
-<p class="facts">Learned by neuroevolution with a curriculum: an open-loop gait prior is SGD-cloned into
-the net, a training harness anneals to zero, learned step-timing (the net modulates its own clock) unlocks
-self-balance, and the gate only accepts the saved artifact covering &ge;10&nbsp;m with zero falls on noise
-seeds never used in training.
-<a href="https://github.com/javimosch/machin-walker">Source &amp; the honest training log</a>.</p>
-<p class="facts" style="margin-top:6px">
-<a href="https://github.com/javimosch/machin-walker/releases/tag/v1.0.0"><b>v1.0.0</b></a>
-&nbsp;·&nbsp; full-3D lateral balance is the <b>v2</b> target (staged, training in progress)
-&nbsp;·&nbsp; built with <a href="https://github.com/javimosch/tinybrain">tinybrain</a> — pure-MFL neural nets.</p>
+<p class="facts">Trained by neuroevolution with a curriculum that ramps shove strength UP (0.8&rarr;2.0&nbsp;m/s),
+the mirror of the walk harness annealing down. It cleanly cleared the 1.7&nbsp;m/s rung — robust to shoves
+well past where the untrained gait falls over. &nbsp;·&nbsp;
+<a href="index.html">← the walk / run demo</a> &nbsp;·&nbsp;
+<a href="https://github.com/javimosch/machin-walker">source &amp; the honest training log</a>.</p>
 <script type="module">
 const status = (m) => document.getElementById('status').textContent = m;
 const cv = document.getElementById('cv'), cx = cv.getContext('2d');
-
-// particle indices (creation order in body.src)
 const HIP=0, CHEST=1, HEAD=2, KNL=3, ANL=4, TOL=5, HEL=6, KNR=7, ANR=8, TOR=9, HER=10, ELL=11, HAL=12, ELR=13, HAR=14;
 
 try {
   const stub = new Proxy({}, { get: () => () => 0 });
-  const [wasmResp, runArt, walkArt] = await Promise.all([
-    fetch('walker.wasm'), (await fetch('walker.json')).text(), (await fetch('walker_slow.json')).text()
+  const [wasmResp, pushArt] = await Promise.all([
+    fetch('push.wasm'), (await fetch('walker_push.json')).text()
   ]);
   const { instance } = await WebAssembly.instantiate(await wasmResp.arrayBuffer(),
     { wasi_snapshot_preview1: stub, env: stub });
   const ex = instance.exports;
   ex._initialize?.();
-  function bootGait(artifact, hz100) {
-    const bytes = new TextEncoder().encode(artifact);
-    const p = ex.buf(BigInt(bytes.length));
-    new Uint8Array(ex.memory.buffer).set(bytes, Number(p));
-    ex.set_hz(BigInt(hz100));
-    if (ex.boot(p) !== 1n) throw new Error('artifact rejected');
-  }
-  bootGait(walkArt, 62);
-  const bw = document.getElementById('bwalk'), br = document.getElementById('brun');
-  function sel(which) {
-    bw.style.background = which === 'walk' ? '#2b6c3f' : '#232a36';
-    bw.style.color = which === 'walk' ? '#fff' : '#cbd5e0';
-    br.style.background = which === 'run' ? '#2b6c3f' : '#232a36';
-    br.style.color = which === 'run' ? '#fff' : '#cbd5e0';
-  }
-  bw.onclick = () => { bootGait(walkArt, 62); sel('walk'); };
-  br.onclick = () => { bootGait(runArt, 95); sel('run'); };
+  const bytes = new TextEncoder().encode(pushArt);
+  const p = ex.buf(BigInt(bytes.length));
+  new Uint8Array(ex.memory.buffer).set(bytes, Number(p));
+  ex.set_hz(BigInt(62));
+  ex.set_mag(BigInt(170));
+  if (ex.boot(p) !== 1n) throw new Error('artifact rejected');
 
-  // tiny 3D camera: look-at + perspective, matching the native viewer
+  document.getElementById('baft').onclick = () => ex.shove(BigInt(-1));
+  document.getElementById('bfore').onclick = () => ex.shove(BigInt(1));
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { ex.shove(BigInt(-1)); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { ex.shove(BigInt(1)); e.preventDefault(); }
+  });
+
   function project(px, py, pz, cam) {
     const [cxp, cyp, czp] = cam.pos, [tx, ty, tz] = cam.tgt;
     let fz = [tx-cxp, ty-cyp, tz-czp];
     const fl = Math.hypot(...fz); fz = fz.map(v => v/fl);
-    let rx = [-fz[2], 0, fz[0]];                      // right = cross(f, up=(0,1,0))
+    let rx = [-fz[2], 0, fz[0]];
     const rl = Math.hypot(...rx); rx = rx.map(v => v/rl);
     const up = [rx[1]*fz[2]-rx[2]*fz[1], rx[2]*fz[0]-rx[0]*fz[2], rx[0]*fz[1]-rx[1]*fz[0]];
     const d = [px-cxp, py-cyp, pz-czp];
     const x = d[0]*rx[0]+d[1]*rx[1]+d[2]*rx[2];
     const y = d[0]*up[0]+d[1]*up[1]+d[2]*up[2];
     const z = d[0]*fz[0]+d[1]*fz[1]+d[2]*fz[2];
-    const f = 700 / Math.tan(0.48);                   // ~55deg fov
+    const f = 700 / Math.tan(0.48);
     return [550 + f*x/z, 350 - f*y/z, z];
   }
-
   function limb(a, b, w, color, segs) { segs.push({a, b, w, color, z: (a[2]+b[2])/2}); }
 
   function draw() {
     cx.fillStyle = '#14161a'; cx.fillRect(0, 0, 1100, 700);
-    const hx = ex.pt_x(BigInt(HIP)), hy = ex.pt_y(BigInt(HIP));
+    const hx = ex.pt_x(BigInt(HIP));
     const cam = { pos: [hx-1.6, 1.7, 3.2], tgt: [hx+0.4, 0.9, 0] };
-    // floor grid + meter marks
     cx.strokeStyle = '#2a2f3a'; cx.lineWidth = 1;
     const gx = Math.floor(hx);
     for (let i = -14; i <= 14; i++) {
@@ -108,16 +95,16 @@ try {
       const a = project(gx-7, 0, z*0.5, cam), b = project(gx+7, 0, z*0.5, cam);
       cx.beginPath(); cx.moveTo(a[0], a[1]); cx.lineTo(b[0], b[1]); cx.stroke();
     }
-    cx.fillStyle = '#8a8a50';
-    for (let m = 0; m <= 30; m++) {
-      const a = project(m, 0.01, -1.2, cam);
-      if (a[2] > 0.5) cx.fillRect(a[0]-2, a[1]-2, 4, 4);
-    }
-    // skeleton with painter-ordered thick segments
     const P = (i, z) => { const px = ex.pt_x(BigInt(i)), py = ex.pt_y(BigInt(i)); return project(px, py, z, cam); };
     const zL=-0.09, zR=0.09, zAL=-0.22, zAR=0.22;
     const skin='#e1c8aa', shirt='#4682c8', pants='#3c465a', shoe='#282830';
     const segs = [];
+    // impulse cue: a red bar at the torso right after a shove
+    const since = Number(ex.p_since()), dir = Number(ex.p_lastdir());
+    if (since < 22 && dir !== 0) {
+      const cpt = P(CHEST, 0), tip = project(ex.pt_x(BigInt(CHEST)) + dir*0.6, ex.pt_y(BigInt(CHEST)), 0, cam);
+      segs.push({a: cpt, b: tip, w: 9, color: '#eb5a46', z: 99});
+    }
     limb(P(HIP,0), P(CHEST,0), 16, shirt, segs);
     limb(P(CHEST,0), P(HEAD,0), 7, skin, segs);
     limb(P(HIP,zL), P(KNL,zL), 10, pants, segs);  limb(P(KNL,zL), P(ANL,zL), 8, pants, segs);
@@ -133,10 +120,15 @@ try {
     }
     const h = P(HEAD, 0);
     cx.fillStyle = skin; cx.beginPath(); cx.arc(h[0], h[1]-4, 13, 0, 7); cx.fill();
-    // HUD
     cx.fillStyle = '#78dc82'; cx.font = '20px system-ui';
-    cx.fillText(`distance ${ex.walk_dist().toFixed(2)} m   speed ${ex.walk_speed().toFixed(2)} m/s   t ${ex.walk_t().toFixed(1)} s`, 24, 40);
-    if (ex.walk_fell() === 1n) { cx.fillStyle = '#e66e5a'; cx.fillText('fell — restarting', 24, 68); }
+    cx.fillText(`shoves ${Number(ex.p_shoves())}   recovered ${Number(ex.p_recovered())}   at 1.70 m/s`, 24, 40);
+    cx.fillStyle = '#96c8e6'; cx.font = '18px system-ui';
+    cx.fillText(`distance ${ex.walk_dist().toFixed(2)} m   speed ${ex.walk_speed().toFixed(2)} m/s`, 24, 66);
+    if (since < 30 && dir !== 0) {
+      cx.fillStyle = '#eb5a46'; cx.font = 'bold 34px system-ui';
+      cx.fillText(dir < 0 ? '← SHOVE' : 'SHOVE →', 470, 130);
+    }
+    if (ex.walk_fell() === 1n) { cx.fillStyle = '#e66e5a'; cx.font = '20px system-ui'; cx.fillText('fell — restarting', 24, 92); }
   }
 
   let last = performance.now(), acc = 0;
@@ -146,7 +138,7 @@ try {
     draw();
     requestAnimationFrame(frame);
   }
-  status('the artifact is running — physics in wasm, drawing in JS');
+  status('shove it — arrow keys or the buttons; physics in wasm, drawing in JS');
   requestAnimationFrame(frame);
 } catch (e) { status('failed: ' + e.message); console.error(e); }
 </script>

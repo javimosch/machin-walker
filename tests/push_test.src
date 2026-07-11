@@ -1,0 +1,53 @@
+// tests/push_test.src — the PUSH-RECOVERY gate, on the committed artifact
+// (ml/models/walker_push.json). No training here. The hard gate is the
+// cleanly-cleared 1.7 m/s rung; 2.0 m/s is reported as informational (partial,
+// the strict 2.0 gate oscillated during training and is not asserted).
+
+var g_pass = 0
+var g_fail = 0
+
+func check(name, cond) {
+	if cond {
+		g_pass = g_pass + 1
+		println("  PASS  " + name)
+	} else {
+		g_fail = g_fail + 1
+		println("  FAIL  " + name)
+	}
+}
+
+func main() {
+	g_hz = 0.62
+	println("=== the push-recovery gate: ml/models/walker_push.json ===")
+	n := net_load("ml/models/walker_push.json")
+	check("push artifact loads (tinybrain/v1)", n.tinybrain == 1)
+	check("controller topology 13-16-4 (blind recovery, no new senses)", n.topology[0] == 13 && n.topology[2] == 4)
+
+	// hard gate: 1.7 m/s shoves, 5 held-out seeds / unseen schedule
+	sf17, falls17, ff17, dist17 := push_gate(n, 1200, 1.7)
+	check("1.7 m/s: zero falls over 5 held-out schedules (falls " + str(falls17) + ")", falls17 == 0)
+	check("1.7 m/s: survives >= 75% of shoves (worst " + str(sf17) + ")", sf17 >= 0.75)
+	check("1.7 m/s: still walks forward >= 7m (worst " + str(dist17) + "m)", dist17 >= 7.0)
+	check("1.7 m/s: stays a walk, flight < 20% (worst " + str(ff17) + ")", ff17 < 0.20)
+
+	// contrast: the UNTRAINED strict walker collapses at this magnitude — proves
+	// the fine-tune added a real capability, not just relabelled the same net
+	base := net_load("ml/models/walker_slow.json")
+	if base.tinybrain == 1 {
+		bsf, bfalls, bff, bdist := push_gate(base, 1200, 1.7)
+		check("baseline walker_slow.json FALLS at 1.7 m/s (falls " + str(bfalls) + " — the gain is real)", bfalls > 0)
+		println("  info  baseline @1.7: surv " + str(bsf) + " falls " + str(bfalls) + " flight " + str(bff) + " dist " + str(bdist) + "m")
+	}
+
+	// informational: the top 2.0 m/s rung (partial — not asserted)
+	sf20, falls20, ff20, dist20 := push_gate(n, 1200, 2.0)
+	println("  info  2.0 m/s (partial): surv " + str(sf20) + " falls " + str(falls20) + " flight " + str(ff20) + " dist " + str(dist20) + "m")
+
+	println("=== summary ===")
+	println("PASS " + str(g_pass) + "   FAIL " + str(g_fail))
+	if g_fail > 0 {
+		println("THERE WERE FAILURES")
+		exit(1)
+	}
+	println("ALL TESTS PASSED")
+}
